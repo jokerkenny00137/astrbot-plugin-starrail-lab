@@ -226,3 +226,30 @@ def list_panels() -> List[Dict[str, Any]]:
             "SELECT uid, nickname, updated_at FROM panels ORDER BY updated_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def cleanup_unbound_panels(
+    ttl_seconds: float,
+    bound_uids: set[str],
+) -> List[str]:
+    """删除「未绑定且超过 TTL」的面板存档，返回被删掉的 UID。
+
+    绑定玩家的存档永远不会被自动清理；TTL <= 0 时调用方不应调用本函数。
+    """
+    if ttl_seconds <= 0:
+        return []
+
+    now = time.time()
+    with closing(_connect()) as conn, conn:
+        rows = conn.execute("SELECT uid, updated_at FROM panels").fetchall()
+        stale = [
+            str(row["uid"])
+            for row in rows
+            if str(row["uid"]) not in bound_uids
+            and now - float(row["updated_at"] or 0) > ttl_seconds
+        ]
+        if stale:
+            conn.executemany(
+                "DELETE FROM panels WHERE uid = ?", [(uid,) for uid in stale]
+            )
+    return stale

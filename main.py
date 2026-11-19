@@ -10,7 +10,8 @@
 
     /绑定 <UID>              把自己的 QQ 与游戏 UID 绑定
     /解绑                    解除绑定
-    /刷新全部面板            管理员指令，后台刷新所有已绑定 / 已存档玩家
+    /刷新 [UID]              后台刷新该玩家的数据与角色卡；不填 UID 则刷新最近查看/绑定的玩家
+    /刷新全部面板            管理员指令，后台刷新所有已绑定玩家
 
 特性：
     * 查询默认读本地存档，只有「刷新」/ 管理员 / 定时任务才联网
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import shutil
 import time
 
 from pathlib import Path
@@ -59,6 +61,7 @@ try:  # AstrBot 以包的形式加载插件
     )
     from .panel_store import (
         bind_user,
+        cleanup_unbound_panels,
         get_bound_uid,
         get_last_query,
         get_panel,
@@ -94,6 +97,7 @@ except ImportError:  # 以普通脚本方式被导入时
     )
     from panel_store import (
         bind_user,
+        cleanup_unbound_panels,
         get_bound_uid,
         get_last_query,
         get_panel,
@@ -194,6 +198,14 @@ SETTING_SPECS = {
         "default": 30,
         "hint": "查完面板后这段时间内继续聊天，插件会把数据交给 AI 参考",
     },
+    "unbound_cache_ttl_days": {
+        "label": "未绑定玩家缓存保留（天）",
+        "type": "int",
+        "min": 0,
+        "max": 365,
+        "default": 3,
+        "hint": "只清理未绑定玩家的面板/角色卡缓存；绑定玩家永久保留。填 0 表示不清理",
+    },
     "precache_cards": {
         "label": "刷新后自动预渲染角色卡",
         "type": "bool",
@@ -272,6 +284,10 @@ class StarRailPanelPlugin(Star):
         self._auto_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
         self._precache_task: asyncio.Task | None = None
+        # UID -> 后台刷新任务，避免同一个玩家被重复刷新
+        self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        # 未绑定玩家缓存清理任务
+        self._maintenance_task: asyncio.Task | None = None
         # 预渲染排队：批量刷新时逐个来，避免同时压垮渲染服务
         self._precache_queue: List[tuple[str, Dict[str, Any]]] = []
         # 正在为聊天渲染的数量：预渲染看到它就停下来让路
@@ -291,6 +307,8 @@ class StarRailPanelPlugin(Star):
         if minutes > 0:
             self._auto_task = asyncio.create_task(self._auto_update_loop(minutes))
             logger.info(f"[星铁面板] 自动更新已开启，间隔 {minutes} 分钟")
+
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
         self._register_web_apis()
 
@@ -463,7 +481,17 @@ class StarRailPanelPlugin(Star):
 
         force_refresh = extra.lower() in REFRESH_WORDS
         if force_refresh:
-            extra = ""
+            # 统一走后台刷新：数据和角色卡一起更新，立即返回，不阻塞聊天
+            started = self._start_refresh(uid)
+            if started:
+                yield event.plain_result(
+                    f"已开始后台刷新 UID {uid} 的数据与角色卡。\n"
+                    f"完成后发 /面板 {uid} 查看即可。"
+                )
+            else:
+                yield event.plain_result(f"UID {uid} 正在刷新中，请稍候再查。")
+            return
+        extra = ""
 
         # 本地优先：数据库里已经有这个 UID 的面板就直接用，只有「刷新」才联网。
         # 这样玩家查询不会被公共接口的排队/解析库滞后卡住。
@@ -635,6 +663,44 @@ class StarRailPanelPlugin(Star):
         async for chunk in self.query_panel(event, uid, (target or "").strip()):
             yield chunk
 
+    @filter.command("刷新", alias={"刷新面板", "更新面板"})
+    async def refresh_command(self, event: AstrMessageEvent, uid: str = ""):
+        """后台刷新某个玩家的数据与角色卡。
+
+        Args:
+            uid(string): 可选。不填则刷新「你最近查看的玩家」，没查过就用绑定账号
+        """
+        target = (uid or "").strip()
+        if target and not (target.isdigit() and len(target) >= 5):
+            yield event.plain_result(
+                "用法：/刷新 [UID]\n"
+                "例如：/刷新 100000000\n"
+                "不带 UID 时，刷新你最近查看的玩家；没查过则刷新绑定账号。"
+            )
+            return
+
+        if not target:
+            target = (
+                self._last_uid.get(self._user_key(event))
+                or get_bound_uid(str(event.get_sender_id()))
+                or ""
+            )
+
+        if not target:
+            yield event.plain_result(
+                "你还没查过任何玩家，也没有绑定账号。\n"
+                "用法：/刷新 <UID>"
+            )
+            return
+
+        if self._start_refresh(target):
+            yield event.plain_result(
+                f"已开始后台刷新 UID {target} 的数据与角色卡。\n"
+                "刷新完成后直接用 /面板 查询即可（会自动使用新数据）。"
+            )
+        else:
+            yield event.plain_result(f"UID {target} 正在刷新中，请稍候。")
+
     def _local_panel(self, uid: str) -> Dict[str, Any] | None:
         """读本地存档。没有或为空返回 None。"""
         try:
@@ -669,6 +735,60 @@ class StarRailPanelPlugin(Star):
                 )
         except Exception:
             logger.exception("[星铁面板] 保存查询记录失败")
+
+    # ------------------------------------------------------------------
+    # 后台刷新
+    # ------------------------------------------------------------------
+
+    def _start_refresh(self, uid: str) -> bool:
+        """启动一个后台刷新任务。已经在刷新的 UID 不会重复启动。"""
+        task = self._refresh_tasks.get(uid)
+        if task and not task.done():
+            return False
+
+        task = asyncio.create_task(self._refresh_uid(uid))
+        self._refresh_tasks[uid] = task
+
+        def _cleanup(finished: asyncio.Task) -> None:
+            if self._refresh_tasks.get(uid) is finished:
+                self._refresh_tasks.pop(uid, None)
+
+        task.add_done_callback(_cleanup)
+        return True
+
+    async def _refresh_uid(self, uid: str) -> None:
+        """后台刷新单个玩家：拉数据 → 存档 → 预渲染角色卡。失败保留旧数据。"""
+        try:
+            result = await asyncio.wait_for(
+                query_player(uid, force_refresh=True),
+                timeout=QUERY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[星铁面板] 刷新 UID {uid} 超时，保留旧数据")
+            return
+        except PlayerQueryError as exc:
+            logger.warning(f"[星铁面板] 刷新 UID {uid} 失败：{exc}，保留旧数据")
+            return
+        except Exception:
+            logger.exception(f"[星铁面板] 刷新 UID {uid} 出错，保留旧数据")
+            return
+
+        if not result.get("ok"):
+            logger.warning(f"[星铁面板] 刷新 UID {uid} 没有返回角色，保留旧数据")
+            return
+
+        result["updated_at"] = time.time()
+        try:
+            save_panel(uid, result.get("nickname", ""), result)
+        except Exception:
+            logger.exception(f"[星铁面板] 保存 UID {uid} 的面板失败")
+
+        self._last_update_at = result["updated_at"]
+        self._last_update_msg = (
+            f"UID {uid} 刷新成功，共 {len(result.get('characters') or [])} 个角色"
+        )
+        logger.info(f"[星铁面板] {self._last_update_msg}")
+        self._schedule_precache(uid, result)
 
     # ------------------------------------------------------------------
     # 角色卡本地预渲染
@@ -775,6 +895,51 @@ class StarRailPanelPlugin(Star):
             f"[星铁面板] UID {uid} 角色卡预渲染完成："
             f"成功 {ok}，跳过已缓存 {skipped}，失败 {failed}"
         )
+
+    # ------------------------------------------------------------------
+    # 未绑定玩家缓存清理
+    # ------------------------------------------------------------------
+
+    def _unbound_ttl_days(self) -> int:
+        try:
+            return int(self.config.get("unbound_cache_ttl_days", 3) or 0)
+        except (TypeError, ValueError):
+            return 3
+
+    async def _maintenance_loop(self) -> None:
+        """定期清理未绑定玩家的过期缓存，绑定玩家永远保留。"""
+        while True:
+            try:
+                await self._cleanup_unbound_cache()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[星铁面板] 清理未绑定玩家缓存失败")
+            await asyncio.sleep(6 * 3600)
+
+    async def _cleanup_unbound_cache(self) -> None:
+        days = self._unbound_ttl_days()
+        if days <= 0:
+            return
+
+        bound = {row["uid"] for row in list_bindings(1000)}
+        removed = cleanup_unbound_panels(days * 86400, bound)
+        if not removed:
+            return
+
+        for uid in removed:
+            shutil.rmtree(self._data_dir / "cards" / uid, ignore_errors=True)
+            shutil.rmtree(self._data_dir / "cache" / uid, ignore_errors=True)
+
+        logger.info(
+            f"[星铁面板] 已清理 {len(removed)} 个未绑定玩家超过 {days} 天的缓存："
+            f"{'、'.join(removed[:10])}"
+        )
+
+    def _restart_maintenance_task(self) -> None:
+        if self._maintenance_task and not self._maintenance_task.done():
+            self._maintenance_task.cancel()
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     # ------------------------------------------------------------------
     # 让 AI 能看见这些数据
@@ -908,7 +1073,7 @@ class StarRailPanelPlugin(Star):
 
         self._refresh_task = asyncio.create_task(self._update_all_bound())
         yield event.plain_result(
-            "已开始后台刷新所有已绑定 / 已存档玩家。\n"
+            "已开始后台刷新所有已绑定玩家。\n"
             "完成后可以在控制面板「玩家数据」页查看结果。"
         )
 
@@ -928,15 +1093,10 @@ class StarRailPanelPlugin(Star):
                 logger.exception("[星铁面板] 自动更新时出错")
 
     async def _update_all_bound(self) -> None:
+        # 只刷新已绑定玩家；未绑定玩家由各自 /刷新 触发，缓存到期后自动清理
         uids = {row["uid"] for row in list_bindings(1000)}
-        # 本地存档里的玩家也一起更新，避免只刷绑定用户、其他人数据永远停在旧版本
-        try:
-            uids |= {row["uid"] for row in list_panels()}
-        except Exception:
-            logger.exception("[星铁面板] 读取本地存档列表失败")
-
         if not uids:
-            logger.info("[星铁面板] 自动更新：没有绑定记录或存档，跳过")
+            logger.info("[星铁面板] 全部刷新：没有绑定记录，跳过")
             return
 
         ok = 0
@@ -958,7 +1118,7 @@ class StarRailPanelPlugin(Star):
 
         self._last_update_at = time.time()
         self._last_update_msg = (
-            f"自动更新完成：成功 {ok}/{len(uids)}"
+            f"全部刷新完成：成功 {ok}/{len(uids)}"
             + (f"，失败：{'、'.join(failed[:5])}" if failed else "")
         )
         logger.info(f"[星铁面板] {self._last_update_msg}")
@@ -1337,6 +1497,8 @@ class StarRailPanelPlugin(Star):
         saved = self._save_plugin_config()
         if "auto_update_minutes" in clean:
             self._restart_auto_task()
+        if "unbound_cache_ttl_days" in clean:
+            self._restart_maintenance_task()
 
         return json_response(
             {
@@ -1475,7 +1637,13 @@ class StarRailPanelPlugin(Star):
 
     async def terminate(self):
         """插件被卸载或重载时调用。"""
-        for task in (self._auto_task, self._refresh_task, self._precache_task):
+        for task in (
+            self._auto_task,
+            self._refresh_task,
+            self._precache_task,
+            self._maintenance_task,
+            *self._refresh_tasks.values(),
+        ):
             if task and not task.done():
                 task.cancel()
         logger.info("[星铁面板] 插件已卸载")

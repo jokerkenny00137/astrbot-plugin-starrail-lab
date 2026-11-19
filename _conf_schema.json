@@ -34,6 +34,12 @@
     "default": 30,
     "hint": "用户查询面板后，在这段时间内继续聊天，插件会把面板数据交给 AI 参考。填 0 则使用默认 30 分钟。"
   },
+  "unbound_cache_ttl_days": {
+    "description": "未绑定玩家缓存保留（天）",
+    "type": "int",
+    "default": 3,
+    "hint": "只清理未绑定玩家的面板存档与角色卡，绑定玩家永久保留。填 0 表示不清理。"
+  },
   "precache_cards": {
     "description": "刷新后自动预渲染角色卡",
     "type": "bool",
