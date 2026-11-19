@@ -489,6 +489,8 @@ async def _render_and_cache(
     save_html: bool,
     use_cache: bool,
     cache_path: Path,
+    inline_images: bool = True,
+    retry_on_timeout: bool = True,
 ) -> Optional[str]:
     """实际渲染路径。同一张卡只会有一个任务在跑。"""
     global LAST_ERROR, LAST_SUCCESS_AT
@@ -514,23 +516,58 @@ async def _render_and_cache(
         logger.exception("[星铁面板] 角色卡模板/数据准备失败")
         return stale_cache()
 
-    # 图片先内嵌，避免渲染端拉不到图或截到空图
-    inlined = await inline_card_images(data)
-    if inlined == 0:
-        logger.warning("[星铁面板] 角色卡图片一张都没内联成功，渲染结果可能缺图")
+    # 图片内嵌可以避免渲染端拉不到图，但请求体会大很多；
+    # 远端渲染慢的时候可以在设置里关掉。
+    inlined = 0
+    if inline_images:
+        inlined = await inline_card_images(data)
+        if inlined == 0:
+            logger.warning("[星铁面板] 角色卡图片一张都没内联成功，渲染结果可能缺图")
+
+    logger.info(
+        f"[星铁面板] 开始渲染角色卡：{panel.get('name')}，"
+        f"模板 {len(template)} 字符，内联 {inlined} 张，超时 {timeout:.0f}s"
+    )
 
     started = time.time()
+    attempt_timeout = timeout
     for attempt in (1, 2):
         try:
             result = await asyncio.wait_for(
                 render(template, data, return_url=True, options={"full_page": True}),
-                timeout=timeout,
+                timeout=attempt_timeout,
             )
         except asyncio.TimeoutError:
-            # 超时说明渲染端点已经卡住，重试只会让用户多等一轮
+            # AstrBot 会在多个远端渲染端点之间随机选一个。超时可能只是抽到了
+            # 一个卡住的端点，重试一次有机会换到可用的。
+            if attempt == 1 and retry_on_timeout:
+                attempt_timeout = min(timeout, 20.0)
+                _log(
+                    f"角色卡渲染超时（{timeout:.0f}s，内联 {inlined} 张，"
+                    f"模板 {len(template)} 字符），用 {attempt_timeout:.0f}s 重试一次"
+                )
+                logger.warning(
+                    f"[星铁面板] 角色卡渲染超时（{timeout:.0f}s，内联 {inlined} 张），"
+                    f"去掉内嵌图、换 {attempt_timeout:.0f}s 重试一次"
+                )
+                if inlined:
+                    # 重试时不再内嵌图片：请求体小很多，让渲染端自己去 CDN 取图
+                    try:
+                        data = build_card_data(panel, uid, nickname)
+                    except Exception:
+                        pass
+                    inlined = 0
+                continue
+
             LAST_ERROR = f"渲染超时（{timeout:.0f} 秒）"
-            _log(f"角色卡渲染超时（{timeout:.0f}s，{panel.get('name')}）")
-            logger.warning(f"[星铁面板] 角色卡渲染超时（{timeout:.0f}s）")
+            _log(
+                f"角色卡渲染两次都超时（内联 {inlined} 张，"
+                f"模板 {len(template)} 字符，{panel.get('name')}）"
+            )
+            logger.warning(
+                f"[星铁面板] 角色卡渲染连续超时（内联 {inlined} 张）"
+                + ("，可在设置里关闭「角色卡图片内嵌」再试" if inlined else "")
+            )
             return stale_cache()
         except Exception as exc:
             LAST_ERROR = f"{type(exc).__name__}: {exc}"
@@ -568,10 +605,12 @@ async def render_character_card(
     panel: Dict[str, Any],
     uid: str,
     nickname: str = "",
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     fresh_after: float = 0.0,
     save_html: bool = False,
     use_cache: bool = True,
+    inline_images: bool = True,
+    retry_on_timeout: bool = True,
 ) -> Optional[str]:
     """渲染角色卡，返回图片 URL 或本地路径；失败返回 None。
 
@@ -608,6 +647,8 @@ async def render_character_card(
             save_html,
             use_cache,
             cache_path,
+            inline_images,
+            retry_on_timeout,
         )
     )
     _RENDER_TASKS[key] = task
@@ -625,3 +666,37 @@ async def render_character_card(
         _log(f"角色卡渲染任务异常（{panel.get('name')}）：{LAST_ERROR}")
         logger.exception("[星铁面板] 角色卡渲染任务异常")
         return str(cache_path) if use_cache and cache_path.exists() else None
+
+
+async def probe_render(star: Any, timeout: float = 30.0) -> Dict[str, Any]:
+    """用一张极简 HTML 测试 AstrBot 的渲染端点，返回耗时与结果。
+
+    角色卡超时到底是「端点本身慢」还是「卡片太大」，看这个就知道。
+    """
+    render = getattr(star, "html_render", None)
+    if not callable(render):
+        return {"ok": False, "elapsed": 0.0, "error": "当前环境没有 html_render"}
+
+    template = (
+        "<html><body style='font-family:sans-serif;padding:20px'>"
+        "AstrBot T2I OK</body></html>"
+    )
+    started = time.time()
+    try:
+        await asyncio.wait_for(
+            render(template, {}, return_url=True, options={"full_page": True}),
+            timeout=timeout,
+        )
+        return {"ok": True, "elapsed": round(time.time() - started, 2)}
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "elapsed": round(time.time() - started, 2),
+            "error": f"渲染端点超时（{timeout:.0f}s）",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "elapsed": round(time.time() - started, 2),
+            "error": f"{type(exc).__name__}: {exc}",
+        }

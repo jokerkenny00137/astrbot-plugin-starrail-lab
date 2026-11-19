@@ -52,6 +52,7 @@ try:  # AstrBot 以包的形式加载插件
         card_html_path,
         card_image_path,
         get_render_status,
+        probe_render,
         render_character_card,
         save_card_html,
         set_card_cache_dir,
@@ -86,6 +87,7 @@ except ImportError:  # 以普通脚本方式被导入时
         card_html_path,
         card_image_path,
         get_render_status,
+        probe_render,
         render_character_card,
         save_card_html,
         set_card_cache_dir,
@@ -145,9 +147,9 @@ SETTING_SPECS = {
         "label": "角色卡渲染超时（秒）",
         "type": "int",
         "min": 5,
-        "max": 60,
-        "default": 15,
-        "hint": "超过这个时间还没渲染完就回退文字，范围 5~60",
+        "max": 120,
+        "default": 30,
+        "hint": "远端渲染服务较慢时调大，范围 5~120；超时后会自动用 20 秒重试一次",
     },
     "card_fail_cooldown_minutes": {
         "label": "角色卡失败后冷却（分钟）",
@@ -178,6 +180,12 @@ SETTING_SPECS = {
         "type": "bool",
         "default": True,
         "hint": "刷新数据后在后台把角色卡存到本地，查询时直接发本地图，减少渲染失败",
+    },
+    "card_inline_images": {
+        "label": "角色卡图片内嵌",
+        "type": "bool",
+        "default": True,
+        "hint": "开启后把头像/光锥/遗器图转成 base64 一起发给渲染端，图更稳但请求体大；渲染超时可尝试关闭",
     },
 }
 
@@ -229,6 +237,8 @@ class StarRailPanelPlugin(Star):
         self._precache_task: asyncio.Task | None = None
         # 预渲染排队：批量刷新时逐个来，避免同时压垮渲染服务
         self._precache_queue: List[tuple[str, Dict[str, Any]]] = []
+        # 正在为聊天渲染的数量：预渲染看到它就停下来让路
+        self._chat_rendering = 0
         # 渲染失败后进入冷却期，冷却结束会重新尝试出图
         self._card_fail_until = 0.0
         # 当前环境根本没有 html_render 时永久关闭
@@ -322,12 +332,18 @@ class StarRailPanelPlugin(Star):
         return ""
 
     def _card_timeout(self) -> float:
-        """角色卡渲染超时（秒），限制在 5~60 之间。"""
+        """角色卡渲染超时（秒），限制在 5~120 之间。"""
         try:
-            value = float(self.config.get("card_render_timeout", 15) or 15)
+            value = float(self.config.get("card_render_timeout", 30) or 30)
         except (TypeError, ValueError):
-            return 15.0
-        return max(5.0, min(60.0, value))
+            return 30.0
+        return max(5.0, min(120.0, value))
+
+    def _inline_images_enabled(self) -> bool:
+        value = self.config.get("card_inline_images", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
 
     def _card_cooldown(self) -> float:
         """失败后的冷却时间（分钟），限制在 0~120 之间。"""
@@ -483,14 +499,19 @@ class StarRailPanelPlugin(Star):
         # 单角色详情：优先用本地缓存的图片，没有再走 html_render
         skip_reason = ""
         if self._card_enabled():
-            image = await render_character_card(
-                self,
-                panel,
-                uid,
-                result.get("nickname", ""),
-                timeout=self._card_timeout(),
-                fresh_after=float(result.get("updated_at") or 0),
-            )
+            self._chat_rendering += 1
+            try:
+                image = await render_character_card(
+                    self,
+                    panel,
+                    uid,
+                    result.get("nickname", ""),
+                    timeout=self._card_timeout(),
+                    fresh_after=float(result.get("updated_at") or 0),
+                    inline_images=self._inline_images_enabled(),
+                )
+            finally:
+                self._chat_rendering -= 1
             if image:
                 logger.debug(f"[星铁面板] 发送角色卡：{panel.get('name')} -> {image}")
                 yield event.image_result(image)
@@ -620,6 +641,7 @@ class StarRailPanelPlugin(Star):
         chars = list(result.get("characters") or [])[:12]
         nickname = result.get("nickname", "")
         fresh_after = float(result.get("updated_at") or 0)
+        # 预渲染是后台任务：超时更短、不在超时后重试，尽快把渲染资源让给聊天
         timeout = min(self._card_timeout(), 20.0)
         ok = 0
         failed = 0
@@ -628,6 +650,9 @@ class StarRailPanelPlugin(Star):
         for panel in chars:
             if not self._card_enabled():
                 break
+            # 聊天正在渲染时先让路，避免和用户查询抢渲染端点
+            while self._chat_rendering > 0:
+                await asyncio.sleep(2)
             # 聊天里已经渲染过的角色不用再渲染一遍
             if card_image_path(uid, panel).exists():
                 skipped += 1
@@ -641,6 +666,8 @@ class StarRailPanelPlugin(Star):
                 timeout=timeout,
                 fresh_after=fresh_after,
                 save_html=True,
+                inline_images=self._inline_images_enabled(),
+                retry_on_timeout=False,
             )
             if image:
                 ok += 1
@@ -857,6 +884,7 @@ class StarRailPanelPlugin(Star):
             ("/settings", self.api_settings, ["GET"], "读取插件设置"),
             ("/settings/save", self.api_save_settings, ["POST"], "保存插件设置"),
             ("/diagnose", self.api_diagnose, ["GET"], "环境自检"),
+            ("/render_test", self.api_render_test, ["POST"], "测试渲染端点"),
         ]
 
         registered = 0
@@ -1297,6 +1325,20 @@ class StarRailPanelPlugin(Star):
         }
 
         return json_response({"checks": checks, "info": info})
+
+    async def api_render_test(self):
+        """POST 用极简 HTML 测一次渲染端点，判断超时是端点慢还是卡片太大。"""
+        payload = await request.json(default={})
+        try:
+            timeout = float(payload.get("timeout") or 30)
+        except (TypeError, ValueError):
+            timeout = 30.0
+        timeout = max(5.0, min(120.0, timeout))
+
+        result = await probe_render(self, timeout=timeout)
+        result["timeout"] = timeout
+        result["inline_images"] = self._inline_images_enabled()
+        return json_response(result)
 
     # ------------------------------------------------------------------
 

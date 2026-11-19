@@ -173,13 +173,15 @@
           <div class="card-head">
             <h2>环境自检</h2>
             <div class="actions">
+              <button id="btn-render-test" class="ghost">测试渲染</button>
               <button id="btn-diagnose" class="ghost">运行自检</button>
             </div>
           </div>
           <p class="muted">
             刷新失败、角色卡不出图时先看这里：能直接定位是解析库、渲染服务还是
-            图片下载的问题。
+            图片下载的问题。「测试渲染」会用一个极简页面测端点耗时。
           </p>
+          <p id="diag-msg" class="msg"></p>
           <div id="checks" class="checks"></div>
           <div class="table-wrap" id="diag-info-wrap">
             <table class="kv-table">

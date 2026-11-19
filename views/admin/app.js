@@ -558,6 +558,39 @@ const TIME_KEYS = new Set([
   "last_update_at",
 ]);
 
+async function testRender() {
+  const btn = $("btn-render-test");
+  const msg = $("diag-msg");
+  btn.disabled = true;
+  btn.textContent = "测试中…";
+  show(msg, "正在用极简页面测试渲染端点，最多等 60 秒…");
+
+  try {
+    const resp = await post("render_test", { timeout: 60 });
+    const p = unwrap(resp, "ok") !== undefined ? resp : resp.data || {};
+    if (p.ok) {
+      show(
+        msg,
+        `渲染端点可用，极简页面耗时 ${p.elapsed} 秒${
+          p.inline_images ? "（角色卡图片内嵌已开启）" : "（角色卡图片内嵌已关闭）"
+        }`,
+        "ok"
+      );
+    } else {
+      show(
+        msg,
+        `渲染失败：${p.error || "未知原因"}，耗时 ${p.elapsed} 秒`,
+        "err"
+      );
+    }
+  } catch (err) {
+    show(msg, "测试失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "测试渲染";
+  }
+}
+
 async function runDiagnose() {
   checksBox.innerHTML = "";
   diagInfo.innerHTML = "";
@@ -653,6 +686,7 @@ $("btn-panels-reload").addEventListener("click", loadPanels);
 $("btn-settings-reload").addEventListener("click", loadSettings);
 $("btn-settings-save").addEventListener("click", saveSettings);
 $("btn-diagnose").addEventListener("click", runDiagnose);
+$("btn-render-test").addEventListener("click", testRender);
 
 $("btn-detail-close").addEventListener("click", () => {
   detailCard.hidden = true;

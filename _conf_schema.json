@@ -13,8 +13,8 @@
   "card_render_timeout": {
     "description": "角色卡渲染超时（秒）",
     "type": "int",
-    "default": 15,
-    "hint": "超过这个时间还没渲染完就回退成文字输出，避免卡住对话。范围 5~60，默认 15。"
+    "default": 30,
+    "hint": "远端渲染服务较慢时调大，范围 5~120。超时后会自动用 20 秒重试一次，仍失败才回退文字。"
   },
   "card_fail_cooldown_minutes": {
     "description": "角色卡失败后冷却（分钟）",
@@ -39,5 +39,11 @@
     "type": "bool",
     "default": true,
     "hint": "开启后，刷新数据会在后台把角色卡渲染成本地图片并缓存，玩家查询时优先发本地图，减少渲染失败和等待。"
+  },
+  "card_inline_images": {
+    "description": "角色卡图片内嵌",
+    "type": "bool",
+    "default": true,
+    "hint": "把头像/光锥/遗器图转成 base64 一起发给渲染端，图片更稳但请求体较大。若经常渲染超时，可以关闭试试。"
   }
 }
