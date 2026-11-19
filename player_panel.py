@@ -376,11 +376,13 @@ def format_character_list(result: Dict[str, Any]) -> str:
             f"  {i}. {c['name']}  Lv{c['level']}  {c['element']}  {c['weapon_name']}"
         )
 
+    sample = chars[0]["name"] if chars else "希儿"
     lines.append("")
     lines.append("想看哪个角色的详细面板，发：")
-    lines.append(f"  /面板 {uid} 角色名    （例如 /面板 {uid} {chars[0]['name'] if chars else '希儿'}）")
-    lines.append(f"  /面板 {uid} 序号      （例如 /面板 {uid} 1）")
-    lines.append(f"  /面板 {uid} 全部      （一次看完整份）")
+    lines.append(f"  /选择查询 角色名      （不用打 UID，如 /选择查询 {sample}）")
+    lines.append("  /选择查询 序号        （如 /选择查询 1）")
+    lines.append("  /选择查询 全部        （一次看完整份）")
+    lines.append(f"  未绑定也可以用：/面板 {uid} 角色名")
     return "\n".join(lines)
 
 

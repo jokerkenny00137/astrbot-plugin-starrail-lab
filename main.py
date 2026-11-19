@@ -155,12 +155,14 @@ class StarRailPanelPlugin(Star):
         return f"{event.get_platform_name()}:{event.get_sender_id()}"
 
     def _resolve_uid(self, event: AstrMessageEvent, uid: str) -> str:
-        """没填 UID 就用绑定的那个。"""
+        """确定要查的 UID：填了就用填的，没填就用绑定的。
+
+        真实 UID 都是 9 位数，少于 5 位的纯数字当作「角色序号」而不是 UID。
+        """
         uid = (uid or "").strip()
-        if uid.isdigit():
+        if uid.isdigit() and len(uid) >= 5:
             return uid
-        bound = get_bound_uid(str(event.get_sender_id()), event.get_platform_name())
-        return bound or ""
+        return get_bound_uid(str(event.get_sender_id())) or ""
 
     # ------------------------------------------------------------------
     # 面板查询
@@ -189,7 +191,8 @@ class StarRailPanelPlugin(Star):
             uid(string): 玩家 UID，纯数字；不填则使用已绑定的 UID
             extra(string): 可选，角色名 / 序号 / 全部 / 刷新
         """
-        uid = self._resolve_uid(event, uid)
+        raw_uid = (uid or "").strip()
+        uid = self._resolve_uid(event, raw_uid)
 
         if not uid:
             yield event.plain_result(
@@ -200,6 +203,10 @@ class StarRailPanelPlugin(Star):
             return
 
         extra = (extra or "").strip()
+        # /面板 1 —— 只发了个短数字，当成角色序号
+        if not extra and raw_uid.isdigit() and len(raw_uid) < 5:
+            extra = raw_uid
+
         force_refresh = extra.lower() in REFRESH_WORDS
         if force_refresh:
             extra = ""
@@ -257,6 +264,24 @@ class StarRailPanelPlugin(Star):
 
         for chunk in _split_text(format_character_panel(panel)):
             yield event.plain_result(chunk)
+
+    @filter.command("选择查询", alias={"选角色", "看角色", "查询角色"})
+    async def select_character(self, event: AstrMessageEvent, target: str = ""):
+        """查看自己绑定账号的角色面板，不需要再输入 UID。
+
+        Args:
+            target(string): 角色名或序号；不填则列出所有角色
+        """
+        uid = self._resolve_uid(event, "")
+        if not uid:
+            yield event.plain_result(
+                "你还没有绑定账号。\n"
+                "先发 /绑定 <UID> 绑定，或者用 /面板 <UID> 直接查。"
+            )
+            return
+
+        async for chunk in self.query_panel(event, uid, (target or "").strip()):
+            yield chunk
 
     def _remember(self, session_key: str, uid: str, result: dict) -> None:
         """把这次查询存下来：会话上下文 + 完整存档。"""

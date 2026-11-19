@@ -140,34 +140,37 @@ def clear_last_query(session_key: str) -> bool:
 
 
 def bind_user(user_id: str, uid: str, platform: str = "") -> None:
+    """绑定。一个 QQ 只保留一条记录，再次绑定就是换绑。"""
+    user_id = str(user_id)
     with closing(_connect()) as conn, conn:
+        # 先清掉这个 QQ 的旧记录，避免出现多条（这也是"换绑"的实现）
+        conn.execute("DELETE FROM bindings WHERE user_id = ?", (user_id,))
         conn.execute(
-            """
-            INSERT INTO bindings (platform, user_id, uid, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(platform, user_id) DO UPDATE SET
-                uid = excluded.uid,
-                created_at = excluded.created_at
-            """,
-            (platform, str(user_id), str(uid), time.time()),
+            "INSERT INTO bindings (platform, user_id, uid, created_at) VALUES (?, ?, ?, ?)",
+            (platform, user_id, str(uid), time.time()),
         )
 
 
 def get_bound_uid(user_id: str, platform: str = "") -> Optional[str]:
+    """查某个 QQ 绑定的 UID。
+
+    只按 QQ 号查，不看平台——否则在网页面板添加的绑定（平台为空）
+    和聊天指令里查询（平台是 aiocqhttp）会匹配不上。
+    """
+    user_id = str(user_id)
     with closing(_connect()) as conn:
         row = conn.execute(
-            "SELECT uid FROM bindings WHERE platform = ? AND user_id = ?",
-            (platform, str(user_id)),
+            "SELECT uid FROM bindings WHERE user_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
         ).fetchone()
     return row["uid"] if row else None
 
 
 def unbind_user(user_id: str, platform: str = "") -> bool:
+    """解除绑定。同样只按 QQ 号删，platform 参数仅为兼容旧调用。"""
     with closing(_connect()) as conn, conn:
-        cur = conn.execute(
-            "DELETE FROM bindings WHERE platform = ? AND user_id = ?",
-            (platform, str(user_id)),
-        )
+        cur = conn.execute("DELETE FROM bindings WHERE user_id = ?", (str(user_id),))
     return cur.rowcount > 0
 
 
