@@ -137,7 +137,7 @@ pip install -r requirements.txt
 
 这是本插件比较特别的一点。
 
-查询完面板后，**在同一个群/私聊里继续聊天**，插件会把这份面板数据自动塞进 AI 的 `system_prompt`，所以你可以直接问：
+查询完面板后，**在同一个群/私聊里继续聊天**，插件会把这份面板数据作为临时用户内容附加到本轮请求（`extra_user_content_parts` + `mark_as_temp()`，不改写 `system_prompt`，不影响 prompt 缓存），所以你可以直接问：
 
 > 我这只希儿的暴击率够不够？
 > 遗器套装搭配有问题吗？

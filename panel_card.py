@@ -475,28 +475,23 @@ def _cache_usable(path: Path, fresh_after: float, max_age: float) -> bool:
     return now - mtime < max_age
 
 
-async def render_character_card(
+# 同一张角色卡正在渲染时复用同一个任务。
+# 典型场景：后台预渲染还没跑完，用户已经在聊天里查同一个角色。
+_RENDER_TASKS: Dict[str, "asyncio.Task[Optional[str]]"] = {}
+
+
+async def _render_and_cache(
     star: Any,
     panel: Dict[str, Any],
     uid: str,
-    nickname: str = "",
-    timeout: float = 15.0,
-    fresh_after: float = 0.0,
-    save_html: bool = False,
-    use_cache: bool = True,
+    nickname: str,
+    timeout: float,
+    save_html: bool,
+    use_cache: bool,
+    cache_path: Path,
 ) -> Optional[str]:
-    """渲染角色卡，返回图片 URL 或本地路径；失败返回 None。
-
-    timeout 必须有：渲染服务不可达时不能拖住整轮对话。
-    fresh_after：面板数据的更新时间。缓存图比数据旧就重新渲染，
-    避免玩家换了遗器之后还发旧卡。
-    """
+    """实际渲染路径。同一张卡只会有一个任务在跑。"""
     global LAST_ERROR, LAST_SUCCESS_AT
-
-    cache_path = card_image_path(uid, panel)
-    if use_cache and _cache_usable(cache_path, fresh_after, 7 * 86400):
-        logger.debug(f"[星铁面板] 角色卡命中本地缓存：{cache_path}")
-        return str(cache_path)
 
     def stale_cache() -> Optional[str]:
         """渲染失败时，宁可发一张旧图也别退化成纯文字。"""
@@ -566,3 +561,67 @@ async def render_character_card(
         return result
 
     return None
+
+
+async def render_character_card(
+    star: Any,
+    panel: Dict[str, Any],
+    uid: str,
+    nickname: str = "",
+    timeout: float = 15.0,
+    fresh_after: float = 0.0,
+    save_html: bool = False,
+    use_cache: bool = True,
+) -> Optional[str]:
+    """渲染角色卡，返回图片 URL 或本地路径；失败返回 None。
+
+    timeout 必须有：渲染服务不可达时不能拖住整轮对话。
+    fresh_after：面板数据的更新时间。缓存图比数据旧就重新渲染，
+    避免玩家换了遗器之后还发旧卡。
+    同一张卡并发请求会共用一次渲染，避免预渲染和聊天互相打架。
+    """
+    cache_path = card_image_path(uid, panel)
+    if use_cache and _cache_usable(cache_path, fresh_after, 7 * 86400):
+        logger.debug(f"[星铁面板] 角色卡命中本地缓存：{cache_path}")
+        return str(cache_path)
+
+    key = str(cache_path)
+    task = _RENDER_TASKS.get(key)
+
+    if task is not None and not task.done():
+        try:
+            # 渲染中的卡：等它出结果，出完通常就是本地文件
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout + 5)
+        except asyncio.TimeoutError:
+            logger.warning("[星铁面板] 等待同一张角色卡渲染超时")
+            return str(cache_path) if use_cache and cache_path.exists() else None
+        except Exception:
+            return str(cache_path) if use_cache and cache_path.exists() else None
+
+    task = asyncio.create_task(
+        _render_and_cache(
+            star,
+            panel,
+            uid,
+            nickname,
+            timeout,
+            save_html,
+            use_cache,
+            cache_path,
+        )
+    )
+    _RENDER_TASKS[key] = task
+
+    def _cleanup(finished: Any) -> None:
+        if _RENDER_TASKS.get(key) is finished:
+            _RENDER_TASKS.pop(key, None)
+
+    task.add_done_callback(_cleanup)
+    try:
+        return await asyncio.shield(task)
+    except Exception as exc:
+        global LAST_ERROR
+        LAST_ERROR = f"{type(exc).__name__}: {exc}"
+        _log(f"角色卡渲染任务异常（{panel.get('name')}）：{LAST_ERROR}")
+        logger.exception("[星铁面板] 角色卡渲染任务异常")
+        return str(cache_path) if use_cache and cache_path.exists() else None

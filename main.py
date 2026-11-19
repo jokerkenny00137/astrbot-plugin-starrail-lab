@@ -32,6 +32,11 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
+try:  # 临时上下文内容块（AstrBot 4.24+，旧版本则跳过注入）
+    from astrbot.core.agent.message import TextPart
+except ImportError:
+    TextPart = None  # type: ignore[assignment]
+
 try:  # 可视化视图用的 Web API 辅助函数（AstrBot 4.24+）
     from astrbot.api.web import error_response, json_response, request
 
@@ -304,6 +309,18 @@ class StarRailPanelPlugin(Star):
             return False
         return True
 
+    def _card_skip_reason(self) -> str:
+        """不出图时给日志一个明确的原因，方便排查。"""
+        mode = str(self.config.get("panel_render_mode", "auto") or "auto").lower()
+        if mode == "text":
+            return "输出方式设置为 text"
+        if self._card_disabled:
+            return "当前环境没有 html_render"
+        remaining = self._card_fail_until - time.time()
+        if remaining > 0:
+            return f"渲染冷却中（还剩 {remaining / 60:.0f} 分钟）"
+        return ""
+
     def _card_timeout(self) -> float:
         """角色卡渲染超时（秒），限制在 5~60 之间。"""
         try:
@@ -448,7 +465,23 @@ class StarRailPanelPlugin(Star):
             )
             return
 
+        # 本地已有与当前数据匹配的图片：直接发，不受渲染冷却影响
+        cached_image = card_image_path(uid, panel)
+        try:
+            fresh_image = cached_image.exists() and (
+                not result.get("updated_at")
+                or cached_image.stat().st_mtime
+                >= float(result["updated_at"]) - 2
+            )
+        except (OSError, TypeError, ValueError):
+            fresh_image = False
+        if fresh_image:
+            logger.debug(f"[星铁面板] 发送本地缓存角色卡：{cached_image}")
+            yield event.image_result(str(cached_image))
+            return
+
         # 单角色详情：优先用本地缓存的图片，没有再走 html_render
+        skip_reason = ""
         if self._card_enabled():
             image = await render_character_card(
                 self,
@@ -459,15 +492,27 @@ class StarRailPanelPlugin(Star):
                 fresh_after=float(result.get("updated_at") or 0),
             )
             if image:
+                logger.debug(f"[星铁面板] 发送角色卡：{panel.get('name')} -> {image}")
                 yield event.image_result(image)
                 return
 
+            skip_reason = (
+                get_render_status().get("last_error") or "渲染返回空，原因未知"
+            )
             minutes = self._card_cooldown()
             if minutes > 0:
                 self._card_fail_until = time.time() + minutes * 60
                 logger.warning(
-                    f"[星铁面板] 角色卡渲染失败，{minutes:.0f} 分钟内改用文本输出"
+                    f"[星铁面板] 角色卡渲染失败（{skip_reason}），"
+                    f"{minutes:.0f} 分钟内改用文本输出"
                 )
+        else:
+            skip_reason = self._card_skip_reason()
+
+        if skip_reason:
+            logger.warning(
+                f"[星铁面板] 角色卡未发送（{panel.get('name')}），改用文本：{skip_reason}"
+            )
 
         text = format_character_panel(panel)
         if result.get("updated_at"):
@@ -559,6 +604,8 @@ class StarRailPanelPlugin(Star):
 
     async def _precache_worker(self) -> None:
         """串行消费预渲染队列。"""
+        # 延迟启动：刚刷新完用户往往会立刻查角色，别和聊天抢渲染服务
+        await asyncio.sleep(15)
         while self._precache_queue:
             uid, result = self._precache_queue.pop(0)
             try:
@@ -573,18 +620,25 @@ class StarRailPanelPlugin(Star):
         chars = list(result.get("characters") or [])[:12]
         nickname = result.get("nickname", "")
         fresh_after = float(result.get("updated_at") or 0)
+        timeout = min(self._card_timeout(), 20.0)
         ok = 0
         failed = 0
+        skipped = 0
 
         for panel in chars:
             if not self._card_enabled():
                 break
+            # 聊天里已经渲染过的角色不用再渲染一遍
+            if card_image_path(uid, panel).exists():
+                skipped += 1
+                continue
+
             image = await render_character_card(
                 self,
                 panel,
                 uid,
                 nickname,
-                timeout=self._card_timeout(),
+                timeout=timeout,
                 fresh_after=fresh_after,
                 save_html=True,
             )
@@ -594,18 +648,17 @@ class StarRailPanelPlugin(Star):
             else:
                 failed += 1
                 if failed >= 3:
-                    minutes = self._card_cooldown()
-                    if minutes > 0:
-                        self._card_fail_until = time.time() + minutes * 60
+                    # 只停止本次预渲染，不进入全局冷却：
+                    # 聊天渲染失败会自己进入冷却，后台任务不该影响用户出图
                     logger.warning(
-                        f"[星铁面板] 预渲染连续失败 {failed} 次，暂停角色卡渲染 "
-                        f"{minutes:.0f} 分钟"
+                        "[星铁面板] 预渲染连续失败 3 次，暂停本次预渲染（不影响聊天出图）"
                     )
                     break
             await asyncio.sleep(1)
 
         logger.info(
-            f"[星铁面板] UID {uid} 角色卡预渲染完成：成功 {ok}，失败 {failed}"
+            f"[星铁面板] UID {uid} 角色卡预渲染完成："
+            f"成功 {ok}，跳过已缓存 {skipped}，失败 {failed}"
         )
 
     # ------------------------------------------------------------------
@@ -614,9 +667,10 @@ class StarRailPanelPlugin(Star):
 
     @filter.on_llm_request()
     async def inject_panel_context(self, event: AstrMessageEvent, req):
-        """在请求大模型前，把用户刚查过的面板数据塞进 system_prompt。
+        """在请求大模型前，把用户刚查过的面板数据作为临时用户内容附上。
 
-        这就是"查完面板后，机器人还能接着聊"的关键。
+        使用 extra_user_content_parts + mark_as_temp，只参与本轮请求、
+        不写回会话历史，也不改 system_prompt（避免破坏 prompt 缓存）。
         """
         try:
             ttl = int(self.config.get("llm_context_ttl_minutes", 0) or 0) * 60
@@ -627,14 +681,29 @@ class StarRailPanelPlugin(Star):
                 return
 
             block = (
-                "\n\n【用户刚刚查询的游戏面板数据】\n"
+                "【用户刚刚查询的游戏面板数据】\n"
                 "以下是用户通过 /面板 指令查到的《崩坏：星穹铁道》角色面板，"
                 "数据来自游戏内公开的角色展示柜，是真实的。\n"
-                "回答与配装、面板、遗器、光锥相关的问题时，请**优先以此数据为依据**，"
+                "回答与配装、面板、遗器、光锥相关的问题时，请优先以此数据为依据，"
                 "不要凭记忆编造数值，也不要建议用户重新发一遍数据。\n"
-                f"{record['summary']}\n"
+                f"{record['summary']}"
             )
-            req.system_prompt = (req.system_prompt or "") + block
+
+            # 不要改写 system_prompt：它是请求前缀，随查询变化会破坏 prompt 缓存。
+            # 用 TextPart 追加到本轮用户消息，并标记为临时内容，不写入会话历史。
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None or TextPart is None:
+                logger.debug(
+                    "[星铁面板] 当前 AstrBot 不支持 extra_user_content_parts，"
+                    "跳过面板上下文注入"
+                )
+                return
+
+            part = TextPart(text=block)
+            mark_temp = getattr(part, "mark_as_temp", None)
+            if callable(mark_temp):
+                part = mark_temp() or part
+            parts.append(part)
         except Exception:
             # 注入失败绝不能影响正常聊天
             logger.exception("[星铁面板] 注入上下文失败")
