@@ -7,7 +7,7 @@ desc: >-
   并列出每件遗器的主词条与副词条。
 version: v1.0.0
 author: jokerkenny00137
-repo: https://github.com/jokerkenny00137/-
+repo: https://github.com/jokerkenny00137/astrbot-plugin-starrail-lab
 astrbot_version: ">=4.5.0"
 support_platforms:
   - aiocqhttp
