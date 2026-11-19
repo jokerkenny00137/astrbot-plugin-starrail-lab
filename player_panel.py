@@ -17,6 +17,7 @@ import asyncio
 import json
 import time
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -264,6 +265,51 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=1)
+def _known_avatar_ids() -> frozenset:
+    """解析库认识的角色 ID 集合（角色名表和属性表都有才算认识）。"""
+    try:
+        from starrail_damage_cal.map.SR_MAP_PATH import (
+            avatarId2DamageType,
+            avatarId2Name,
+        )
+    except Exception:
+        return frozenset()
+    return frozenset(k for k in avatarId2Name if k in avatarId2DamageType)
+
+
+def _drop_unknown_avatars(mihomo_data: Any) -> List[str]:
+    """剔除解析库不认识的角色，返回被剔除的 avatarId 列表。
+
+    库的数据表更新慢于游戏，新角色出现时 api_to_dict 会整体 KeyError，
+    这里先过滤掉不认识的，剩下的角色照常解析。
+    """
+    known = _known_avatar_ids()
+    if not known:
+        return []
+
+    detail = getattr(mihomo_data, "detailInfo", None)
+    if detail is None:
+        return []
+
+    dropped: List[str] = []
+    for field in ("avatarDetailList", "assistAvatarList"):
+        avatars = getattr(detail, field, None) or []
+        keep = []
+        for avatar in avatars:
+            avatar_id = str(getattr(avatar, "avatarId", ""))
+            if avatar_id in known:
+                keep.append(avatar)
+            else:
+                dropped.append(avatar_id)
+        try:
+            setattr(detail, field, keep)
+        except Exception:
+            return []
+
+    return dropped
+
+
 async def query_player(uid: str, force_refresh: bool = False) -> Dict[str, Any]:
     """查询一个玩家的所有展示柜角色面板。
 
@@ -282,10 +328,26 @@ async def query_player(uid: str, force_refresh: bool = False) -> Dict[str, Any]:
     nickname = detail.get("nickname") or "未知玩家"
 
     mihomo_data = convert(raw, type=MihomoData)
-    char_id_list, char_data = await api_to_dict(mihomo_raw=mihomo_data)
 
     characters: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
+
+    try:
+        char_id_list, char_data = await api_to_dict(mihomo_raw=mihomo_data)
+    except KeyError:
+        # 解析库的角色表里还没有这个玩家展示柜里的新角色时，整批解析会直接
+        # KeyError。把不认识的角色剔除后重试一次，别让一个角色毁掉整次查询。
+        dropped = _drop_unknown_avatars(mihomo_data)
+        if not dropped:
+            raise PlayerQueryError(
+                "解析库不认识这个展示柜里的角色，暂时查不了。\n"
+                "可以试试升级依赖：python -m pip install -U starrail_damage_cal"
+            ) from None
+        for avatar_id in dropped:
+            errors.append(
+                {"id": avatar_id, "error": "解析库尚未收录该角色，已跳过"}
+            )
+        char_id_list, char_data = await api_to_dict(mihomo_raw=mihomo_data)
 
     for cid in char_id_list:
         try:
