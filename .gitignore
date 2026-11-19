@@ -17,7 +17,9 @@ venv/
 env/
 .eggs/
 
-# ---- 测试与调试产物 ----
+# ---- 测试与调试产物（本地自用，不随插件发布）----
+test.py
+sample_team.json
 .pytest_cache/
 .coverage
 htmlcov/

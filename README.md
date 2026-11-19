@@ -214,7 +214,7 @@ Mihomo 是第三方开源项目，其数据原始来源为米游社 / HoYoLAB �
 
 ## 关于配队伤害计算（实验性，未接入指令）
 
-仓库里的 `team_damage.py` 是早期写的配队伤害计算逻辑，可以在本地用 `test.py` 跑通。
+仓库里的 `team_damage.py` 是早期写的配队伤害计算逻辑，可用 `calculate_team_damage()` 在本地脚本里直接调用。
 
 但它依赖的 `starrail_damage_cal` 只实现了 **50 个角色的伤害逻辑，最新只到 2.2 版本的「知更鸟」**。之后的新角色会抛 `UnsupportedAvatarError`。
 
@@ -224,16 +224,18 @@ Mihomo 是第三方开源项目，其数据原始来源为米游社 / HoYoLAB �
 
 ```bash
 pip install -r requirements.txt
-
-# 查玩家面板（不需要 AstrBot）
-python test.py 100000000
-
-# 忽略缓存重新查
-python test.py 100000000 -r
-
-# 跑配队伤害计算演示（仅限老角色）
-python test.py sample_team.json
 ```
+
+调试脚本（`test.py`、`sample_team.json`）为开发期自用文件，不随插件仓库发布。需要时可直接调用核心模块：
+
+```python
+from player_panel import query_player_sync, format_player_report
+
+result = query_player_sync("100000000")   # 第二个参数 force_refresh=True 可忽略缓存
+print(format_player_report(result))
+```
+
+历史版本中的 `test.py` 仍可从 git 提交记录中取回。
 
 ## 目录结构
 
@@ -243,11 +245,9 @@ astrbot_plugin_starrail_lab/
 ├── player_panel.py     # 面板查询核心：联网、解析、计算、排版
 ├── panel_store.py      # SQLite 存储：绑定关系、最近查询、面板存档
 ├── team_damage.py      # 配队伤害计算（实验性，未接入指令）
-├── test.py             # 本地测试脚本，不需要 AstrBot
 ├── metadata.yaml       # 插件元信息
 ├── _conf_schema.json   # 插件配置页的表单定义
 ├── requirements.txt    # 第三方依赖
-├── sample_team.json    # 配队伤害演示用的假数据
 ├── views/
 │   └── admin/          # WebUI 控制面板（index.html + app.js + style.css）
 ├── .astrbot-plugin/
