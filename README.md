@@ -15,6 +15,7 @@
 - `/绑定 <UID>` —— 把自己的 QQ 和游戏账号绑定，之后直接发 `/面板` 即可
 - **查询结果会自动进入 AI 上下文**：查完面板继续聊天时，AI 能看懂这份数据并据此给建议
 - 支持定时自动更新已绑定玩家的面板数据（可在插件配置页开启）
+- **自带 WebUI 控制面板**：在 AstrBot 网页里增删绑定、单独或批量刷新面板
 - 内置缓存，同一玩家 10 分钟内重复查询不会重复请求接口
 
 ## 效果
@@ -229,7 +230,7 @@ python test.py sample_team.json
 
 ```
 astrbot_plugin_starrail_lab/
-├── main.py             # AstrBot 插件入口：指令、上下文注入、定时任务
+├── main.py             # AstrBot 插件入口：指令、上下文注入、定时任务、Web API
 ├── player_panel.py     # 面板查询核心：联网、解析、计算、排版
 ├── panel_store.py      # SQLite 存储：绑定关系、最近查询、面板存档
 ├── team_damage.py      # 配队伤害计算（实验性，未接入指令）
@@ -238,9 +239,39 @@ astrbot_plugin_starrail_lab/
 ├── _conf_schema.json   # 插件配置页的表单定义
 ├── requirements.txt    # 第三方依赖
 ├── sample_team.json    # 配队伤害演示用的假数据
+├── views/
+│   └── admin/          # WebUI 控制面板（index.html + app.js + style.css）
+├── .astrbot-plugin/
+│   └── i18n/           # 控制面板的标题、描述等文案
 ├── LICENSE
 └── README.md
 ```
+
+## 控制面板
+
+AstrBot 的 WebUI → 插件 → 本插件详情页 → **打开视图「绑定管理」**。
+
+面板里可以：
+
+- 查看所有 QQ 与 UID 的绑定关系，以及每个账号面板的最后更新时间
+- 手动新增绑定（给不方便发指令的群友代绑）
+- 删除绑定
+- 单个刷新某个账号的面板
+- 一键后台刷新全部绑定账号
+
+面板通过 AstrBot 官方的 Plugin View bridge 调用后端接口，不直接发 HTTP 请求，符合沙箱安全要求。
+
+对应的后端接口（`Context.register_web_api` 注册）：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/astrbot_plugin_starrail_lab/bindings` | 列出绑定关系 |
+| POST | `/astrbot_plugin_starrail_lab/bindings/add` | 新增绑定 |
+| POST | `/astrbot_plugin_starrail_lab/bindings/delete` | 删除绑定 |
+| POST | `/astrbot_plugin_starrail_lab/refresh` | 刷新单个 UID |
+| POST | `/astrbot_plugin_starrail_lab/refresh_all` | 后台刷新全部 |
+
+> 需要 AstrBot **4.24 及以上**才支持插件视图。低版本插件仍可正常聊天使用，只是没有这个面板。
 
 ## 插件配置
 

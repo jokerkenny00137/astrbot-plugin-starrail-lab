@@ -26,12 +26,21 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
+try:  # 可视化视图用的 Web API 辅助函数（AstrBot 4.24+）
+    from astrbot.api.web import error_response, json_response, request
+
+    WEB_API_AVAILABLE = True
+except ImportError:
+    WEB_API_AVAILABLE = False
+    error_response = json_response = request = None  # type: ignore[assignment]
+
 try:  # AstrBot 以包的形式加载插件
     from .panel_store import (
         bind_user,
         get_bound_uid,
         get_last_query,
         list_bindings,
+        list_panels,
         save_last_query,
         save_panel,
         set_db_path,
@@ -53,6 +62,7 @@ except ImportError:  # 以普通脚本方式被导入时
         get_bound_uid,
         get_last_query,
         list_bindings,
+        list_panels,
         save_last_query,
         save_panel,
         set_db_path,
@@ -109,12 +119,15 @@ class StarRailPanelPlugin(Star):
         self.config = config or {}
         self._data_dir = self._resolve_data_dir()
         self._auto_task: asyncio.Task | None = None
+        self._refresh_task: asyncio.Task | None = None
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
         if minutes > 0:
             self._auto_task = asyncio.create_task(self._auto_update_loop(minutes))
             logger.info(f"[星铁面板] 自动更新已开启，间隔 {minutes} 分钟")
+
+        self._register_web_apis()
 
     # ------------------------------------------------------------------
     # 初始化
@@ -380,9 +393,143 @@ class StarRailPanelPlugin(Star):
         logger.info(f"[星铁面板] 自动更新完成：成功 {ok}/{len(uids)}")
 
     # ------------------------------------------------------------------
+    # 控制面板后端接口（供 views/admin 页面调用）
+    # ------------------------------------------------------------------
+
+    def _register_web_apis(self) -> None:
+        """注册控制面板用的接口。注册失败不影响聊天功能。"""
+        if not WEB_API_AVAILABLE:
+            logger.warning(
+                "[星铁面板] 当前 AstrBot 版本不支持插件视图 API，控制面板不可用"
+            )
+            return
+
+        routes = [
+            ("/bindings", self.api_list_bindings, ["GET"], "列出绑定关系"),
+            ("/bindings/add", self.api_add_binding, ["POST"], "新增绑定"),
+            ("/bindings/delete", self.api_delete_binding, ["POST"], "删除绑定"),
+            ("/refresh", self.api_refresh_one, ["POST"], "刷新单个玩家面板"),
+            ("/refresh_all", self.api_refresh_all, ["POST"], "刷新全部绑定玩家"),
+        ]
+
+        registered = 0
+        for path, handler, methods, desc in routes:
+            try:
+                self.context.register_web_api(
+                    f"/{PLUGIN_NAME}{path}", handler, methods, desc
+                )
+                registered += 1
+            except Exception:
+                logger.exception(f"[星铁面板] 注册接口 {path} 失败")
+
+        logger.info(f"[星铁面板] 控制面板接口已注册 {registered}/{len(routes)} 个")
+
+    async def api_list_bindings(self):
+        """GET 绑定列表，附带每个 UID 的面板更新时间。"""
+        try:
+            rows = list_bindings(500)
+            panels = {p["uid"]: p for p in list_panels()}
+        except Exception as exc:
+            logger.exception("[星铁面板] 读取绑定列表失败")
+            return error_response(f"读取数据库失败：{exc}", status_code=500)
+
+        data = []
+        for row in rows:
+            panel = panels.get(row["uid"]) or {}
+            data.append(
+                {
+                    "platform": row["platform"] or "",
+                    "user_id": row["user_id"],
+                    "uid": row["uid"],
+                    "nickname": panel.get("nickname", ""),
+                    "updated_at": panel.get("updated_at", 0),
+                    "created_at": row["created_at"] or 0,
+                }
+            )
+
+        return json_response({"bindings": data, "total": len(data)})
+
+    async def api_add_binding(self):
+        """POST 新增一条绑定。"""
+        payload = await request.json(default={})
+        user_id = str(payload.get("user_id", "")).strip()
+        uid = str(payload.get("uid", "")).strip()
+        platform = str(payload.get("platform", "")).strip()
+
+        if not user_id.isdigit():
+            return error_response("QQ 号必须是纯数字")
+        if not uid.isdigit():
+            return error_response("UID 必须是纯数字")
+
+        try:
+            bind_user(user_id, uid, platform)
+        except Exception as exc:
+            logger.exception("[星铁面板] 新增绑定失败")
+            return error_response(f"保存失败：{exc}", status_code=500)
+
+        return json_response({"ok": True, "user_id": user_id, "uid": uid})
+
+    async def api_delete_binding(self):
+        """POST 删除一条绑定。"""
+        payload = await request.json(default={})
+        user_id = str(payload.get("user_id", "")).strip()
+        platform = str(payload.get("platform", "")).strip()
+
+        if not user_id:
+            return error_response("缺少 QQ 号")
+
+        try:
+            ok = unbind_user(user_id, platform)
+        except Exception as exc:
+            logger.exception("[星铁面板] 删除绑定失败")
+            return error_response(f"删除失败：{exc}", status_code=500)
+
+        return json_response({"ok": bool(ok)})
+
+    async def api_refresh_one(self):
+        """POST 立即刷新某个 UID 的面板。"""
+        payload = await request.json(default={})
+        uid = str(payload.get("uid", "")).strip()
+        if not uid.isdigit():
+            return error_response("UID 必须是纯数字")
+
+        try:
+            result = await asyncio.wait_for(
+                query_player(uid, force_refresh=True),
+                timeout=QUERY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return error_response("查询超时，公共接口可能正在排队", status_code=504)
+        except PlayerQueryError as exc:
+            return error_response(str(exc))
+        except Exception as exc:
+            logger.exception(f"[星铁面板] 刷新 UID {uid} 失败")
+            return error_response(f"{type(exc).__name__}: {exc}", status_code=500)
+
+        if result.get("ok"):
+            save_panel(uid, result.get("nickname", ""), result)
+
+        return json_response(
+            {
+                "ok": bool(result.get("ok")),
+                "nickname": result.get("nickname", ""),
+                "characters": len(result.get("characters", [])),
+            }
+        )
+
+    async def api_refresh_all(self):
+        """POST 后台刷新全部绑定玩家（立即返回，不等结果）。"""
+        if self._refresh_task and not self._refresh_task.done():
+            return json_response({"started": True, "message": "已经在刷新中，请稍候"})
+
+        self._refresh_task = asyncio.create_task(self._update_all_bound())
+        return json_response({"started": True, "message": "已开始后台刷新"})
+
+    # ------------------------------------------------------------------
 
     async def terminate(self):
         """插件被卸载或重载时调用。"""
-        if self._auto_task:
-            self._auto_task.cancel()
+        for task in (self._auto_task, self._refresh_task):
+            if task and not task.done():
+                task.cancel()
         logger.info("[星铁面板] 插件已卸载")

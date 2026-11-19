@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>绑定管理 - 星穹铁道面板</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="page-head">
+        <h1>绑定管理</h1>
+        <p class="sub">管理 QQ 与游戏 UID 的绑定关系，并刷新面板数据</p>
+      </header>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>新增绑定</h2>
+        </div>
+        <form id="add-form" class="row">
+          <input
+            id="input-qq"
+            placeholder="QQ 号"
+            inputmode="numeric"
+            autocomplete="off"
+          />
+          <input
+            id="input-uid"
+            placeholder="游戏 UID"
+            inputmode="numeric"
+            autocomplete="off"
+          />
+          <input id="input-platform" placeholder="平台（选填）" autocomplete="off" />
+          <button type="submit" class="primary">添加</button>
+        </form>
+        <p id="add-msg" class="msg"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>
+            已绑定
+            <span id="total" class="badge">0</span>
+          </h2>
+          <div class="actions">
+            <button id="btn-refresh-all" class="ghost">刷新全部</button>
+            <button id="btn-reload" class="ghost">重新加载</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>QQ</th>
+                <th>UID</th>
+                <th>昵称</th>
+                <th>面板更新</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr>
+                <td colspan="5" class="empty">加载中…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="table-msg" class="msg"></p>
+      </section>
+
+      <footer class="foot">
+        数据来自玩家公开的角色展示柜，缓存保存在 AstrBot 的 plugin_data 目录。
+      </footer>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "views": {
+    "admin": {
+      "title": "绑定管理",
+      "description": "管理 QQ 与游戏 UID 的绑定关系，刷新面板数据"
+    }
+  }
+}
