@@ -134,22 +134,28 @@ async function refreshOne(item, btn) {
 }
 
 async function removeBinding(item, btn) {
-  const ok = window.confirm(
-    `确定要解除 ${item.user_id} 与 UID ${item.uid} 的绑定吗？`
-  );
-  if (!ok) return;
+  // 注意：插件视图运行在受限 iframe 里，window.confirm 会被浏览器拦截，
+  // 所以这里用「点两次确认」的方式代替弹窗。
+  if (btn.dataset.confirm !== "1") {
+    btn.dataset.confirm = "1";
+    btn.textContent = "确认删除?";
+    setTimeout(() => {
+      btn.dataset.confirm = "";
+      btn.textContent = "删除";
+    }, 4000);
+    return;
+  }
 
   btn.disabled = true;
   try {
-    await post("bindings/delete", {
-      user_id: item.user_id,
-      platform: item.platform || "",
-    });
-    show(tableMsg, "已删除", "ok");
+    await post("bindings/delete", { user_id: item.user_id });
+    show(tableMsg, `已解除 ${item.user_id} 与 UID ${item.uid} 的绑定`, "ok");
     await loadList();
   } catch (err) {
     show(tableMsg, "删除失败：" + err.message, "err");
     btn.disabled = false;
+    btn.dataset.confirm = "";
+    btn.textContent = "删除";
   }
 }
 
@@ -176,7 +182,6 @@ $("add-form").addEventListener("submit", async (e) => {
 
   const user_id = $("input-qq").value.trim();
   const uid = $("input-uid").value.trim();
-  const platform = $("input-platform").value.trim();
 
   if (!/^\d+$/.test(user_id)) {
     show(addMsg, "QQ 号必须是纯数字", "err");
@@ -191,7 +196,7 @@ $("add-form").addEventListener("submit", async (e) => {
   btn.disabled = true;
   show(addMsg, "保存中…");
   try {
-    await post("bindings/add", { user_id, uid, platform });
+    await post("bindings/add", { user_id, uid });
     show(addMsg, `已绑定：${user_id} → ${uid}`, "ok");
     $("input-qq").value = "";
     $("input-uid").value = "";

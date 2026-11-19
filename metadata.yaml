@@ -5,7 +5,7 @@ desc: >-
   根据玩家 UID 读取公开的角色展示柜数据，计算真实面板
   （攻击 / 生命 / 防御 / 速度 / 暴击率 / 暴击伤害 / 属性伤害），
   并列出每件遗器的主词条与副词条。
-version: v1.1.1
+version: v1.1.2
 author: jokerkenny00137
 repo: https://github.com/jokerkenny00137/astrbot-plugin-starrail-lab
 astrbot_version: ">=4.5.0"
