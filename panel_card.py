@@ -36,9 +36,21 @@ except Exception:  # 极简环境下没有 aiohttp 时跳过内联，退化为�
     aiohttp = None  # type: ignore[assignment]
 
 try:  # AstrBot 以包的形式加载插件
-    from .relic_score import get_relic_profile, key_stat_names, score_relic
+    from .relic_score import (
+        KEY_WEIGHT_THRESHOLD,
+        STAT_KEY_MAP,
+        get_relic_profile,
+        key_stat_names,
+        score_relic,
+    )
 except ImportError:  # 以普通脚本方式被导入时
-    from relic_score import get_relic_profile, key_stat_names, score_relic
+    from relic_score import (
+        KEY_WEIGHT_THRESHOLD,
+        STAT_KEY_MAP,
+        get_relic_profile,
+        key_stat_names,
+        score_relic,
+    )
 
 CARD_DIR = Path(__file__).resolve().parent / "card"
 TEMPLATE_FILE = CARD_DIR / "character.html"
@@ -221,6 +233,18 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
         rarity = relic.get("rarity", 5)
         tier = "gold" if rarity >= 5 else ("purple" if rarity == 4 else "")
         subs = relic.get("subs", [])
+        main_name = relic.get("main_name", "")
+
+        # 主词条也算一次「关键属性」标注。新存档带 main_property，
+        # 旧存档只能按中文名 + 是否百分比反推。
+        main_property = relic.get("main_property", "")
+        if not main_property and (
+            relic.get("main_is_percent", True) or main_name == "速度"
+        ):
+            main_property = STAT_KEY_MAP.get(main_name, "")
+        main_key = bool(weight) and (
+            weight.get(main_property, 0.0) >= KEY_WEIGHT_THRESHOLD
+        )
 
         # 原始分按该角色的理论上限归一化到 10 分制
         score = 0.0
@@ -230,6 +254,15 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
             score = min(RELIC_MAX_SCORE, raw / weight_max * RELIC_MAX_SCORE)
             relic_scores.append(score)
 
+        sub_items = [
+            {
+                "text": f"{s['name']} {_affix(s['value'], s['is_percent'])}",
+                "key": bool(weight)
+                and weight.get(s.get("property", ""), 0.0) >= KEY_WEIGHT_THRESHOLD,
+            }
+            for s in subs
+        ]
+
         relics.append(
             {
                 "tier": tier,
@@ -238,14 +271,12 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
                 "slot": relic.get("slot", ""),
                 "name": relic.get("name", ""),
                 "level": relic.get("level", 0),
-                "main_name": relic.get("main_name", ""),
+                "main_name": main_name,
                 "main_value": _affix(
                     relic.get("main_value", 0.0), relic.get("main_is_percent", True)
                 ),
-                "subs": [
-                    f"{s['name']} {_affix(s['value'], s['is_percent'])}"
-                    for s in subs
-                ],
+                "main_key": main_key,
+                "subs": sub_items,
                 "score": f"{score:.1f}" if has_score else "",
                 "score_max": f"{RELIC_MAX_SCORE:.0f}" if has_score else "",
             }
@@ -290,6 +321,12 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
         "rarity": max(0, min(5, rarity)),
         "stars_text": "★" * max(0, min(5, rarity)),
         "avatar_url": _avatar_url(panel.get("avatar_id")),
+        # 开拓者「记忆」命途（8008）在 jsDelivr 上是 403，需要 raw 源兜底
+        "avatar_url_alt": (
+            _asset_alt(f"avatar/{panel.get('avatar_id')}")
+            if panel.get("avatar_id")
+            else ""
+        ),
         "weapon": {
             "name": panel.get("weapon_name") or "未装备",
             "level": panel.get("weapon_level", 0),
@@ -363,7 +400,14 @@ async def inline_card_images(data: Dict[str, Any]) -> int:
 
     jobs: List[Tuple[Dict[str, Any], str, str, str]] = []
     if data.get("avatar_url"):
-        jobs.append((data, "avatar_url", data["avatar_url"], ""))
+        jobs.append(
+            (
+                data,
+                "avatar_url",
+                data["avatar_url"],
+                data.get("avatar_url_alt", ""),
+            )
+        )
 
     weapon = data.get("weapon") or {}
     if weapon.get("icon"):
@@ -483,6 +527,12 @@ def _cache_usable(path: Path, fresh_after: float, max_age: float) -> bool:
         mtime = path.stat().st_mtime
     except OSError:
         return False
+    # 模板改过（升级插件）后，旧图自动失效，避免一直发没有新样式的缓存卡
+    try:
+        if TEMPLATE_FILE.stat().st_mtime > mtime:
+            return False
+    except OSError:
+        pass
     now = time.time()
     if fresh_after and mtime < fresh_after - 2:
         return False

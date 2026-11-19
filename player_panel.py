@@ -253,6 +253,8 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
                 "level": relic.Level,
                 "main_name": relic.MainAffix.Name,
                 "main_value": relic.MainAffix.Value,
+                # 英文属性名，用来判断主词条是不是该角色的关键属性
+                "main_property": getattr(relic.MainAffix, "Property", ""),
                 "main_is_percent": not relic.MainAffix.Property.endswith("Delta"),
                 "subs": [
                     {

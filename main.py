@@ -726,8 +726,21 @@ class StarRailPanelPlugin(Star):
             # 聊天正在渲染时先让路，避免和用户查询抢渲染端点
             while self._chat_rendering > 0:
                 await asyncio.sleep(2)
-            # 聊天里已经渲染过的角色不用再渲染一遍
-            if card_image_path(uid, panel).exists():
+            # 聊天里已经渲染过、且比数据和模板都新的角色不用再渲染
+            image_path = card_image_path(uid, panel)
+            try:
+                template_mtime = TEMPLATE_FILE.stat().st_mtime
+            except OSError:
+                template_mtime = 0.0
+            try:
+                reusable = (
+                    image_path.exists()
+                    and image_path.stat().st_mtime
+                    >= max(fresh_after, template_mtime) - 2
+                )
+            except OSError:
+                reusable = False
+            if reusable:
                 skipped += 1
                 continue
 
@@ -1164,7 +1177,14 @@ class StarRailPanelPlugin(Star):
         image = ""
         path = card_image_path(uid, panel)
         try:
-            if path.exists() and path.stat().st_mtime >= updated_at - 2:
+            template_mtime = TEMPLATE_FILE.stat().st_mtime
+        except OSError:
+            template_mtime = 0.0
+        try:
+            if (
+                path.exists()
+                and path.stat().st_mtime >= max(updated_at, template_mtime) - 2
+            ):
                 image = "data:image/png;base64," + base64.b64encode(
                     path.read_bytes()
                 ).decode()
@@ -1176,7 +1196,8 @@ class StarRailPanelPlugin(Star):
             html_path = card_html_path(uid, panel)
             if (
                 html_path.exists()
-                and html_path.stat().st_mtime >= updated_at - 2
+                and html_path.stat().st_mtime
+                >= max(updated_at, template_mtime) - 2
             ):
                 html = html_path.read_text(encoding="utf-8")
             else:

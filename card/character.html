@@ -351,6 +351,16 @@
     color: rgba(233, 237, 250, .8);
   }
 
+  /* 遗器里的关键属性词条：金光标注 */
+  .relic-main .key { color: var(--gold); }
+  .relic-main .key b { color: var(--gold); text-shadow: 0 0 10px rgba(242, 198, 109, .35); }
+  .subs span.key {
+    color: var(--gold);
+    background: rgba(242, 198, 109, .13);
+    border: 1px solid rgba(242, 198, 109, .28);
+    text-shadow: 0 0 8px rgba(242, 198, 109, .3);
+  }
+
   .setline {
     margin-top: 10px;
     font-size: 11.5px;
@@ -379,7 +389,7 @@
   <div class="hero">
     <div class="portrait r{{ rarity }}">
       <div class="glow"></div>
-      {% if avatar_url %}<img src="{{ avatar_url }}" alt="" onerror="this.style.visibility='hidden'">{% endif %}
+      {% if avatar_url %}<img src="{{ avatar_url }}" alt="" data-alt="{{ avatar_url_alt }}" onerror="if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.style.visibility='hidden'}">{% endif %}
       <div class="meta">
         <div class="cname">{{ name }}</div>
         <div class="csub">
@@ -455,11 +465,11 @@
           <span class="rlv">+{{ r.level }}</span>
         </div>
         <div class="relic-main">
-          <span>主词条 {{ r.main_name }} <b>{{ r.main_value }}</b></span>
+          <span{% if r.main_key %} class="key"{% endif %}>主词条 {{ r.main_name }} <b>{{ r.main_value }}</b></span>
           {% if r.score %}<span class="rscore">{{ r.score }}<i>/{{ r.score_max }}</i></span>{% endif %}
         </div>
         <div class="subs">
-          {% for sub in r.subs %}<span>{{ sub }}</span>{% endfor %}
+          {% for sub in r.subs %}<span{% if sub.key %} class="key"{% endif %}>{{ sub.text }}</span>{% endfor %}
         </div>
       </div>
       {% endfor %}
