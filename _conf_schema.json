@@ -1,0 +1,14 @@
+{
+  "auto_update_minutes": {
+    "description": "自动更新间隔（分钟）",
+    "type": "int",
+    "default": 0,
+    "hint": "填 0 表示关闭。开启后会定期刷新所有已绑定玩家的面板并保存到数据库。建议 30 分钟以上，避免频繁请求公共接口。"
+  },
+  "llm_context_ttl_minutes": {
+    "description": "面板数据注入 AI 上下文的有效期（分钟）",
+    "type": "int",
+    "default": 30,
+    "hint": "用户查询面板后，在这段时间内继续聊天，插件会把面板数据交给 AI 参考。填 0 则使用默认 30 分钟。"
+  }
+}

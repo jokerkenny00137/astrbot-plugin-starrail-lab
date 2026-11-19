@@ -174,6 +174,7 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
         relics.append(
             {
                 "name": relic.relicName,
+                "set_name": relic.SetName,
                 "level": relic.Level,
                 "main_name": relic.MainAffix.Name,
                 "main_value": relic.MainAffix.Value,
@@ -353,3 +354,93 @@ def format_player_report(result: Dict[str, Any]) -> str:
 def query_player_sync(uid: str, force_refresh: bool = False) -> Dict[str, Any]:
     """同步版，方便普通脚本直接调用。"""
     return asyncio.run(query_player(uid, force_refresh=force_refresh))
+
+
+# --------------------------------------------------------------------------
+# 角色列表 / 按名字查找
+# --------------------------------------------------------------------------
+
+
+def format_character_list(result: Dict[str, Any]) -> str:
+    """只列出角色清单，让用户自己挑一个看详情。"""
+    chars = result.get("characters", [])
+    uid = result.get("uid", "")
+    lines = [
+        f"【{result.get('nickname', '未知玩家')}】UID {uid}",
+        f"展示柜共 {len(chars)} 个角色：",
+        "",
+    ]
+
+    for i, c in enumerate(chars, 1):
+        lines.append(
+            f"  {i}. {c['name']}  Lv{c['level']}  {c['element']}  {c['weapon_name']}"
+        )
+
+    lines.append("")
+    lines.append("想看哪个角色的详细面板，发：")
+    lines.append(f"  /面板 {uid} 角色名    （例如 /面板 {uid} {chars[0]['name'] if chars else '希儿'}）")
+    lines.append(f"  /面板 {uid} 序号      （例如 /面板 {uid} 1）")
+    lines.append(f"  /面板 {uid} 全部      （一次看完整份）")
+    return "\n".join(lines)
+
+
+def find_character(result: Dict[str, Any], keyword: str) -> Any:
+    """按角色名或序号找角色。找不到返回 None。"""
+    chars = result.get("characters", [])
+    kw = str(keyword or "").strip()
+    if not kw:
+        return None
+
+    if kw.isdigit():
+        idx = int(kw) - 1
+        return chars[idx] if 0 <= idx < len(chars) else None
+
+    for c in chars:  # 先精确匹配
+        if c["name"] == kw:
+            return c
+    for c in chars:  # 再模糊匹配，比如「知更鸟」能命中「知更鸟•晴歌」
+        if kw in c["name"] or c["name"] in kw:
+            return c
+    return None
+
+
+def build_llm_summary(result: Dict[str, Any], max_chars: int = 3000) -> str:
+    """生成一份给大模型看的紧凑摘要（不含每条副词条，控制长度）。"""
+    chars = result.get("characters", [])
+    lines = [
+        f"玩家：{result.get('nickname', '未知玩家')}（UID {result.get('uid', '')}），"
+        f"展示柜角色 {len(chars)} 个。"
+    ]
+
+    for c in chars:
+        parts = [
+            f"{c['name']} Lv{c['level']} 命座{c['rank']} {c['element']}属性",
+            f"光锥「{c['weapon_name']}」叠影{c['weapon_rank']}",
+            (
+                f"攻击{c['attack']:.0f} 生命{c['hp']:.0f} "
+                f"防御{c['defence']:.0f} 速度{c['speed']:.0f}"
+            ),
+            f"暴击率{c['crit_rate'] * 100:.1f}% 暴击伤害{c['crit_dmg'] * 100:.1f}%",
+        ]
+        if c["element_dmg"]:
+            parts.append(f"{c['element']}伤{c['element_dmg'] * 100:.1f}%")
+        if c["break_effect"]:
+            parts.append(f"击破特攻{c['break_effect'] * 100:.1f}%")
+
+        set_count: Dict[str, int] = {}
+        for relic in c["relics"]:
+            name = relic["set_name"]
+            set_count[name] = set_count.get(name, 0) + 1
+        if set_count:
+            parts.append(
+                "遗器：" + "、".join(f"{k}×{v}" for k, v in set_count.items())
+            )
+            mains = [r["main_name"] for r in c["relics"]]
+            parts.append("主词条：" + "、".join(mains))
+
+        lines.append("- " + "｜".join(parts))
+
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n（数据较长，已截断）"
+    return text
