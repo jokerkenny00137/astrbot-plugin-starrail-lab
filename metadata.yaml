@@ -1,0 +1,22 @@
+name: astrbot_plugin_starrail_lab
+display_name: 星穹铁道面板查询
+short_desc: 按 UID 查询崩坏：星穹铁道玩家的角色面板与遗器
+desc: >-
+  根据玩家 UID 读取公开的角色展示柜数据，计算真实面板
+  （攻击 / 生命 / 防御 / 速度 / 暴击率 / 暴击伤害 / 属性伤害），
+  并列出每件遗器的主词条与副词条。
+version: v1.0.0
+author: jokerkenny00137
+repo: https://github.com/jokerkenny00137/astrbot_plugin_starrail_lab
+astrbot_version: ">=4.5.0"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+  - lark
+  - dingtalk
+  - discord
+  - slack
+  - kook
+  - satori

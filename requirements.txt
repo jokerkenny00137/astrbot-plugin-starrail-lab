@@ -1,0 +1,2 @@
+# 需要 Python 3.11 或更高版本（该库自身的要求）
+starrail_damage_cal==4.6.0

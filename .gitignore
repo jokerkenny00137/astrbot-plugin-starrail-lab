@@ -1,0 +1,32 @@
+# ---- 玩家数据缓存（含真实 UID 和角色数据，绝对不能提交）----
+cache/
+data/
+*.local.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.eggs/
+
+# ---- 测试与调试产物 ----
+.pytest_cache/
+.coverage
+htmlcov/
+out.txt
+*.log
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
