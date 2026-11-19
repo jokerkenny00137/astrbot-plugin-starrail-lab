@@ -482,6 +482,11 @@ function buildSettingRow(key, spec, value) {
     input.type = "text";
     input.placeholder = "留空使用默认端点";
     input.value = value == null ? "" : value;
+  } else if (spec.type === "textarea") {
+    input = document.createElement("textarea");
+    input.rows = 9;
+    input.value = value == null ? "" : value;
+    row.classList.add("wide");
   } else {
     input = document.createElement("input");
     input.type = "number";
@@ -508,7 +513,8 @@ async function saveSettings() {
     const key = input.dataset.key;
     const type = input.dataset.type;
     if (type === "bool") values[key] = input.checked;
-    else if (type === "select" || type === "text") values[key] = input.value;
+    else if (type === "select" || type === "text" || type === "textarea")
+      values[key] = input.value;
     else values[key] = input.value === "" ? 0 : Number(input.value);
   }
 

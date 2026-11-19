@@ -389,6 +389,28 @@ td.acts button {
   flex: none;
 }
 
+.setting-control textarea {
+  width: 100%;
+  min-height: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.7;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.setting-row.wide {
+  grid-template-columns: 220px 1fr;
+}
+
+.setting-row.wide .setting-hint {
+  grid-column: 2;
+}
+
 .setting-hint {
   margin: 0;
   font-size: 12px;

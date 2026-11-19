@@ -134,6 +134,25 @@ ALL_WORDS = {"全部", "所有", "全", "all"}
 # 注入 AI 上下文的默认有效期（秒），可在插件配置里改
 DEFAULT_CONTEXT_TTL = 1800
 
+# 练度分析说明词：随面板数据一起交给 AI，用户可在控制面板里改
+DEFAULT_ANALYSIS_PROMPT = (
+    "当用户要求分析角色练度、强度、配装或是否值得培养时，按以下结构回答，"
+    "结论先行、用数据说话：\n"
+    "1. 结论：先说角色定位（主C/副C/辅助/生存/击破等）和当前练度档位"
+    "（偏低/合格/优秀），以及是否建议继续投入。\n"
+    "2. 面板体检：对照该角色机制，逐项判断关键属性是否达标"
+    "（暴击率/暴击伤害/速度/击破特攻/效果命中/治疗量/能量恢复等，只挑相关的说），"
+    "给出参考区间，指出差距最大的项。\n"
+    "3. 遗器诊断：套装是否契合定位；主词条是否正确；副词条有效词条数/评分如何"
+    "（数据里有分数就引用），明确指出最该替换的 1~2 件及原因。\n"
+    "4. 光锥与命座：光锥是否契合、叠影等级的影响；命座是否改变定位或值得继续抽。\n"
+    "5. 提升优先级：按性价比给出不超过 3 条建议（遗器 > 光锥 > 行迹 > 命座），"
+    "说明每条大概能带来什么提升。\n"
+    "6. 数据不足时直接说明缺什么（例如没有遗器、缺少关键属性），不要编造数值。\n"
+    "要求：使用游戏内术语；引用面板里的具体数值；不要复述整份面板；"
+    "不要用“很强/很弱”这类空泛评价。"
+)
+
 # 控制面板能改的设置。类型、范围和默认值都写在这里，前端只负责展示。
 SETTING_SPECS = {
     "panel_render_mode": {
@@ -199,6 +218,12 @@ SETTING_SPECS = {
         "default": "",
         "hint": "可选，例如 https://t2i.example.com/text2img。留空则用 AstrBot 配置或官方端点列表",
     },
+    "analysis_prompt": {
+        "label": "练度分析说明词",
+        "type": "textarea",
+        "default": DEFAULT_ANALYSIS_PROMPT,
+        "hint": "查完面板后随数据一起交给 AI，决定它怎么分析角色练度；留空则不注入",
+    },
 }
 
 
@@ -251,6 +276,8 @@ class StarRailPanelPlugin(Star):
         self._precache_queue: List[tuple[str, Dict[str, Any]]] = []
         # 正在为聊天渲染的数量：预渲染看到它就停下来让路
         self._chat_rendering = 0
+        # (会话|发送者) -> 最近一次查询的 UID，供 /选择查询 使用
+        self._last_uid: Dict[str, str] = {}
         # 渲染失败后进入冷却期，冷却结束会重新尝试出图
         self._card_fail_until = 0.0
         # 当前环境根本没有 html_render 时永久关闭
@@ -302,6 +329,13 @@ class StarRailPanelPlugin(Star):
         if uid.isdigit() and len(uid) >= 5:
             return uid
         return get_bound_uid(str(event.get_sender_id())) or ""
+
+    def _user_key(self, event: AstrMessageEvent) -> str:
+        """会话 + 发送者，用来记录「这个人最近查的是谁」。
+
+        不能用会话级记录：群里 A 查了别人的面板，B 再发 /选择查询 不能串到 A 的目标。
+        """
+        return f"{self._session_key(event)}|{event.get_sender_id()}"
 
     # ------------------------------------------------------------------
     # 角色卡（图片输出）
@@ -479,6 +513,11 @@ class StarRailPanelPlugin(Star):
             )
             return
 
+        # 记住这个人这次查的是谁，/选择查询 接着用
+        if len(self._last_uid) > 500:
+            self._last_uid.clear()
+        self._last_uid[self._user_key(event)] = uid
+
         if fetched:
             # 刚拉下来的新数据：入库 + 后台预渲染角色卡
             result["updated_at"] = time.time()
@@ -584,7 +623,8 @@ class StarRailPanelPlugin(Star):
         Args:
             target(string): 角色名或序号；不填则列出所有角色
         """
-        uid = self._resolve_uid(event, "")
+        # 优先用这个人最近查过的 UID：查完别人的面板后，/选择查询 也应该查那个人
+        uid = self._last_uid.get(self._user_key(event)) or self._resolve_uid(event, "")
         if not uid:
             yield event.plain_result(
                 "你还没有绑定账号。\n"
@@ -750,6 +790,21 @@ class StarRailPanelPlugin(Star):
                 "不要凭记忆编造数值，也不要建议用户重新发一遍数据。\n"
                 f"{record['summary']}"
             )
+
+            guide = str(
+                self.config.get("analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or ""
+            ).strip()
+            # 只在用户确实在问面板/练度相关问题时才带上分析框架，
+            # 免得闲聊也被强行套模板
+            user_text = str(getattr(event, "message_str", "") or "")
+            analysis_keywords = (
+                "练度", "面板", "配装", "遗器", "光锥", "词条", "暴击", "爆伤",
+                "速度", "击破", "效果命中", "治疗", "命座", "星魂", "强度",
+                "培养", "值得", "分析", "评分", "毕业", "达标", "属性", "伤害",
+                "角色", "提升", "优化", "够不够", "怎么样", "看看",
+            )
+            if guide and any(word in user_text for word in analysis_keywords):
+                block += "\n\n【练度分析要求】\n" + guide[:4000]
 
             # 不要改写 system_prompt：它是请求前缀，随查询变化会破坏 prompt 缓存。
             # 用 TextPart 追加到本轮用户消息，并标记为临时内容，不写入会话历史。
@@ -1162,8 +1217,8 @@ class StarRailPanelPlugin(Star):
             if isinstance(raw, str):
                 return raw.strip().lower() not in {"0", "false", "no", "off", ""}
             return bool(raw)
-        if spec["type"] == "text":
-            return str(raw or "").strip()
+        if spec["type"] in {"text", "textarea"}:
+            return str(raw if raw is not None else spec["default"]).strip()
         text = str(raw or spec["default"]).strip()
         return text if text in spec.get("options", []) else spec["default"]
 
@@ -1237,6 +1292,8 @@ class StarRailPanelPlugin(Star):
                     clean[key] = raw.strip().lower() in {"1", "true", "yes", "on"}
                 else:
                     clean[key] = bool(raw)
+            elif spec["type"] == "textarea":
+                clean[key] = str(raw or "").strip()[:4000]
             elif spec["type"] == "text":
                 text = str(raw or "").strip()
                 if text and not text.startswith(("http://", "https://")):
