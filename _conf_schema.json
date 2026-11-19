@@ -1,4 +1,21 @@
 {
+  "panel_render_mode": {
+    "description": "角色详情输出方式",
+    "type": "string",
+    "options": [
+      "auto",
+      "image",
+      "text"
+    ],
+    "default": "auto",
+    "hint": "auto：能渲染成图片就发图片，渲染失败自动回退文字（推荐）。image：同 auto，但渲染失败会写日志提醒。text：只发文字。只有「查看单个角色详情」会出图，角色清单和全部角色仍然是文字。"
+  },
+  "card_render_timeout": {
+    "description": "角色卡渲染超时（秒）",
+    "type": "int",
+    "default": 15,
+    "hint": "超过这个时间还没渲染完就回退成文字输出，避免卡住对话。范围 5~60，默认 15。"
+  },
   "auto_update_minutes": {
     "description": "自动更新间隔（分钟）",
     "type": "int",

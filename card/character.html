@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>角色卡</title>
+<style>
+  :root {
+    --accent: {{ accent }};
+    --accent-soft: {{ accent_soft }};
+    --gold: #f2c66d;
+    --purple: #b07cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  /* 星级配色：五星金、四星淡紫、三星灰 */
+  .r5 { --star: #f2c66d; --star-soft: rgba(242, 198, 109, .30); }
+  .r4 { --star: #b07cff; --star-soft: rgba(176, 124, 255, .28); }
+  .r3 { --star: #9aa4b8; --star-soft: rgba(154, 164, 184, .24); }
+
+  body {
+    width: 760px;
+    padding: 18px;
+    color: #e9edfa;
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei",
+                 "PingFang SC", "Hiragino Sans GB", sans-serif;
+    background:
+      radial-gradient(820px 460px at 12% -12%, var(--accent-soft) 0%, transparent 62%),
+      radial-gradient(680px 400px at 104% -6%, rgba(122, 146, 255, .30) 0%, transparent 58%),
+      linear-gradient(168deg, #101527 0%, #1a2036 42%, #221d33 100%);
+  }
+
+  .card {
+    background: rgba(255, 255, 255, .055);
+    border: 1px solid rgba(255, 255, 255, .11);
+    border-radius: 18px;
+    backdrop-filter: blur(12px);
+  }
+
+  /* ---------- 顶部：玩家信息 ---------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 12px;
+  }
+  .topbar .who { display: flex; align-items: baseline; gap: 8px; }
+  .topbar .nickname { font-size: 17px; font-weight: 600; letter-spacing: .3px; }
+  .topbar .uid { font-size: 12px; color: rgba(233, 237, 250, .55); }
+  .topbar .tag {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    color: var(--accent);
+    background: rgba(255, 255, 255, .07);
+    border: 1px solid rgba(255, 255, 255, .10);
+    letter-spacing: 1px;
+  }
+
+  /* ---------- 角色 + 光锥 ---------- */
+  .hero { display: flex; gap: 12px; margin-bottom: 12px; }
+
+  .portrait {
+    position: relative;
+    width: 214px;
+    min-height: 240px;
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background:
+      radial-gradient(120% 80% at 50% 0%, var(--star-soft, var(--accent-soft)) 0%, transparent 70%),
+      radial-gradient(120% 80% at 50% 0%, var(--accent-soft) 0%, transparent 70%),
+      linear-gradient(180deg, rgba(255,255,255,.10) 0%, rgba(10,14,26,.72) 100%);
+    border: 2px solid var(--star, rgba(255, 255, 255, .14));
+    box-shadow:
+      0 0 22px var(--star-soft, transparent),
+      inset 0 0 0 1px rgba(255, 255, 255, .06);
+  }
+  .portrait .glow {
+    position: absolute;
+    left: 50%;
+    top: 12px;
+    width: 150px;
+    height: 150px;
+    transform: translateX(-50%);
+    border-radius: 50%;
+    background: var(--star, var(--accent));
+    filter: blur(34px);
+    opacity: .30;
+  }
+  .portrait img {
+    position: relative;
+    display: block;
+    width: 176px;
+    height: 176px;
+    margin: 14px auto 0;
+    border-radius: 14px;
+    object-fit: cover;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .45);
+  }
+  .portrait .meta {
+    position: relative;
+    padding: 10px 14px 14px;
+    background: linear-gradient(180deg, transparent 0%, rgba(8, 11, 21, .78) 42%);
+  }
+  .portrait .cname {
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, .55);
+  }
+  .portrait .csub {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: rgba(233, 237, 250, .78);
+  }
+  .portrait .csub .lv {
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .14);
+    font-weight: 600;
+    color: #fff;
+  }
+  .portrait .csub .stars { color: var(--gold); letter-spacing: 1px; }
+
+  .hero-right { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+
+  .block { padding: 12px 14px; }
+  .block-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: rgba(233, 237, 250, .62);
+    margin-bottom: 10px;
+  }
+  .block-title::before {
+    content: "";
+    width: 3px;
+    height: 12px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  .weapon { display: flex; align-items: center; gap: 12px; }
+  .weapon .wicon {
+    width: 56px;
+    height: 56px;
+    border-radius: 12px;
+    object-fit: cover;
+    background: var(--star-soft, rgba(255, 255, 255, .08));
+    border: 1.5px solid var(--star, rgba(255, 255, 255, .12));
+    box-shadow: 0 0 14px var(--star-soft, transparent);
+  }
+  .weapon .wname { font-size: 16px; font-weight: 600; color: #fff; }
+  .weapon .wmeta {
+    margin-top: 6px;
+    font-size: 12px;
+    color: rgba(233, 237, 250, .66);
+    display: flex;
+    gap: 10px;
+  }
+  .chip {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .09);
+    border: 1px solid rgba(255, 255, 255, .10);
+    font-size: 12px;
+    color: rgba(233, 237, 250, .9);
+  }
+
+  /* 套装 */
+  .set-block { flex: 1; display: flex; flex-direction: column; }
+  .set-list { display: flex; flex-direction: column; gap: 6px; }
+  .set-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    border-radius: 9px;
+    background: rgba(8, 11, 20, .38);
+    border: 1px solid rgba(255, 255, 255, .09);
+    font-size: 12.5px;
+  }
+  .set-row .set-name {
+    color: rgba(233, 237, 250, .88);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .set-row .set-count {
+    flex: none;
+    margin-left: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gold);
+  }
+  .set-row.loose { opacity: .62; }
+  .set-row.loose .set-count { color: rgba(233, 237, 250, .62); }
+  .set-empty { font-size: 12px; color: rgba(233, 237, 250, .5); }
+
+  .set-total {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 10px;
+    border-top: 1px dashed rgba(255, 255, 255, .13);
+  }
+  .set-total .set-total-label {
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    color: rgba(233, 237, 250, .62);
+  }
+  .set-total .set-total-value {
+    font-size: 21px;
+    font-weight: 700;
+    color: var(--gold);
+    text-shadow: 0 0 14px rgba(242, 198, 109, .38);
+    font-variant-numeric: tabular-nums;
+  }
+  .set-total .set-total-value i {
+    font-style: normal;
+    font-size: 12px;
+    font-weight: 400;
+    color: rgba(233, 237, 250, .45);
+    margin-left: 3px;
+    text-shadow: none;
+  }
+
+  /* ---------- 属性 ---------- */
+  .section { margin-bottom: 12px; padding: 14px 16px; }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 26px;
+    row-gap: 2px;
+  }
+  .stat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 2px;
+    font-size: 13px;
+    border-bottom: 1px solid rgba(255, 255, 255, .055);
+  }
+  .stat .k { color: rgba(233, 237, 250, .72); display: flex; align-items: center; gap: 7px; }
+  .stat .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    flex: none;
+  }
+  .stat .v { font-size: 14px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
+
+  /* 高权重属性：金色标注 */
+  .stat.key .k { color: rgba(242, 198, 109, .92); }
+  .stat.key .dot { background: var(--gold); box-shadow: 0 0 8px var(--gold); }
+  .stat.key .v { color: var(--gold); text-shadow: 0 0 12px rgba(242, 198, 109, .38); }
+  .stat .v small { font-weight: 400; font-size: 11px; color: rgba(233, 237, 250, .55); margin-left: 4px; }
+
+  /* ---------- 遗器 ---------- */
+  .relic-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .relic {
+    padding: 10px 12px;
+    border-radius: 13px;
+    background: rgba(255, 255, 255, .045);
+    border: 1px solid rgba(255, 255, 255, .09);
+  }
+  .relic.gold { border-color: rgba(242, 198, 109, .38); background: rgba(242, 198, 109, .07); }
+  .relic.purple { border-color: rgba(176, 124, 255, .34); background: rgba(176, 124, 255, .07); }
+  .relic-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 7px;
+  }
+  .relic-head .ricon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex: none;
+    background: rgba(255, 255, 255, .09);
+    border: 1px solid rgba(255, 255, 255, .14);
+  }
+  .relic-head .slot {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .32);
+    color: rgba(233, 237, 250, .8);
+    flex: none;
+  }
+  .relic-head .rname {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .relic-head .rlv {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--gold);
+    flex: none;
+  }
+  .relic-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: rgba(233, 237, 250, .78);
+    margin-bottom: 6px;
+  }
+  .relic-main b { color: #fff; font-size: 13px; }
+  .relic-main .rscore {
+    flex: none;
+    padding: 1px 8px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--gold);
+    background: rgba(242, 198, 109, .12);
+    border: 1px solid rgba(242, 198, 109, .22);
+  }
+  .relic-main .rscore i {
+    font-style: normal;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: rgba(233, 237, 250, .42);
+  }
+  .subs { display: flex; flex-wrap: wrap; gap: 5px; }
+  .subs span {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .07);
+    color: rgba(233, 237, 250, .8);
+  }
+
+  .setline {
+    margin-top: 10px;
+    font-size: 11.5px;
+    color: rgba(233, 237, 250, .6);
+  }
+
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 6px 0;
+    font-size: 10.5px;
+    color: rgba(233, 237, 250, .38);
+  }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="who">
+      <span class="nickname">{{ nickname }}</span>
+      <span class="uid">UID {{ uid }}</span>
+    </div>
+    <span class="tag">角色详情</span>
+  </div>
+
+  <div class="hero">
+    <div class="portrait r{{ rarity }}">
+      <div class="glow"></div>
+      {% if avatar_url %}<img src="{{ avatar_url }}" alt="" onerror="this.style.visibility='hidden'">{% endif %}
+      <div class="meta">
+        <div class="cname">{{ name }}</div>
+        <div class="csub">
+          <span class="lv">Lv.{{ level }}</span>
+          <span>命座 {{ rank }}</span>
+          <span class="stars">{{ stars_text }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-right">
+      <div class="card block">
+        <div class="block-title">光锥</div>
+        <div class="weapon">
+          {% if weapon.icon %}<img class="wicon r{{ weapon.rarity }}" src="{{ weapon.icon }}" alt="" onerror="{% if weapon.icon_alt %}if(this.dataset.f){this.style.display='none'}else{this.dataset.f=1;this.src='{{ weapon.icon_alt }}'}{% else %}this.style.display='none'{% endif %}">{% endif %}
+          <div>
+            <div class="wname">{{ weapon.name }}</div>
+            <div class="wmeta">
+              <span>等级 {{ weapon.level }}</span>
+              <span>叠影 {{ weapon.rank }} 阶</span>
+              <span class="chip">{{ weapon.stars_text }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card block set-block">
+        <div class="block-title">遗器套装</div>
+        {% if set_list %}
+        <div class="set-list">
+          {% for s in set_list %}
+          <div class="set-row{% if s.loose %} loose{% endif %}">
+            <span class="set-name">{{ s.name }}</span>
+            <span class="set-count">{{ s.count }} 件</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="set-empty">未装备遗器</div>
+        {% endif %}
+        {% if relic_total %}
+        <div class="set-total">
+          <span class="set-total-label">遗器总分</span>
+          <span class="set-total-value">{{ relic_total }}<i>/ {{ relic_total_max }}</i></span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card section">
+    <div class="block-title">角色属性</div>
+    <div class="stat-grid">
+      {% for s in stats %}
+      <div class="stat{% if s.key %} key{% endif %}">
+        <span class="k"><i class="dot"></i>{{ s.label }}</span>
+        <span class="v">{{ s.value }}{% if s.sub %}<small>{{ s.sub }}</small>{% endif %}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card section">
+    <div class="block-title">遗器属性</div>
+    {% if relics %}
+    <div class="relic-grid">
+      {% for r in relics %}
+      <div class="relic {{ r.tier }}">
+        <div class="relic-head">
+          {% if r.icon %}<img class="ricon" src="{{ r.icon }}" alt="" onerror="{% if r.icon_alt %}if(this.dataset.f){this.style.display='none'}else{this.dataset.f=1;this.src='{{ r.icon_alt }}'}{% else %}this.style.display='none'{% endif %}">{% endif %}
+          <span class="slot">{{ r.slot }}</span>
+          <span class="rname">{{ r.name }}</span>
+          <span class="rlv">+{{ r.level }}</span>
+        </div>
+        <div class="relic-main">
+          <span>主词条 {{ r.main_name }} <b>{{ r.main_value }}</b></span>
+          {% if r.score %}<span class="rscore">{{ r.score }}<i>/{{ r.score_max }}</i></span>{% endif %}
+        </div>
+        <div class="subs">
+          {% for sub in r.subs %}<span>{{ sub }}</span>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="setline">未装备遗器</div>
+    {% endif %}
+  </div>
+
+  <div class="footer">
+    <span>数据来自游戏内公开的角色展示柜</span>
+    <span>面板不含光锥技能效果</span>
+  </div>
+
+</body>
+</html>

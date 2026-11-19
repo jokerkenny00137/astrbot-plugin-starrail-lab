@@ -149,6 +149,33 @@ def _calc_stat(base_value: float, delta: float, ratio: float) -> float:
     return base_value * (1 + ratio) + delta
 
 
+# 遗器部位（库里的 Type 是 int，1~6）
+RELIC_SLOT_CN = {
+    1: "头冠",
+    2: "手部",
+    3: "躯干",
+    4: "脚部",
+    5: "位面球",
+    6: "连结绳",
+}
+
+
+def _relic_rarity(relic_id: Any) -> int:
+    """遗器 ID 首位数字减一就是稀有度：6xxxx -> 5 星，5xxxx -> 4 星。"""
+    try:
+        return max(3, min(5, int(str(relic_id)[0]) - 1))
+    except (TypeError, ValueError, IndexError):
+        return 5
+
+
+def _star(value: Any, default: int = 5) -> int:
+    """星级归一化。库里角色星级是字符串 '5'，光锥星级是 int 5。"""
+    try:
+        return int(str(value).strip()[-1])
+    except (TypeError, ValueError, IndexError):
+        return default
+
+
 async def build_character_panel(char: Character) -> Dict[str, Any]:
     """把单个角色算成一份面板。
 
@@ -171,8 +198,13 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
 
     relics: List[Dict[str, Any]] = []
     for relic in char.char_relic or []:
+        relic_id = getattr(relic, "relicId", 0) or 0
         relics.append(
             {
+                "id": relic_id,
+                "set_id": getattr(relic, "SetId", 0) or 0,
+                "rarity": _relic_rarity(relic_id),
+                "slot": RELIC_SLOT_CN.get(getattr(relic, "Type", 0), ""),
                 "name": relic.relicName,
                 "set_name": relic.SetName,
                 "level": relic.Level,
@@ -182,6 +214,8 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
                 "subs": [
                     {
                         "name": sub.Name,
+                        # 英文属性名，遗器评分要拿它去匹配权重表
+                        "property": sub.Property,
                         "value": sub.Value,
                         "is_percent": not sub.Property.endswith("Delta"),
                     }
@@ -192,10 +226,15 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
 
     return {
         "name": char.char_name,
+        "avatar_id": char.char_id,
+        "rarity": _star(getattr(char, "char_rarity", 0)),
         "level": char.char_level,
         "rank": char.char_rank,
         "element": ELEMENT_CN.get(element, element),
+        "element_en": element,
         "weapon_name": char.equipment.equipmentName or "未装备",
+        "weapon_id": char.equipment.equipmentID,
+        "weapon_rarity": _star(getattr(char.equipment, "equipmentRarity", 0)),
         "weapon_level": char.equipment.equipmentLevel,
         "weapon_rank": char.equipment.equipmentRank,
         "hp": _calc_stat(
@@ -219,6 +258,7 @@ async def build_character_panel(char: Character) -> Dict[str, Any]:
         "heal_bonus": add.get("HealRatioBase", 0.0),
         "break_effect": add.get("BreakDamageAddedRatioBase", 0.0),
         "effect_hit": add.get("StatusProbabilityBase", 0.0),
+        "effect_res": add.get("StatusResistanceBase", 0.0),
         "energy_regen": add.get("SPRatioBase", 0.0),
         "relics": relics,
     }

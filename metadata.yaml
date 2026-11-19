@@ -6,10 +6,11 @@ desc: >-
   （攻击 / 生命 / 防御 / 速度 / 暴击率 / 暴击伤害 / 属性伤害），
   并列出每件遗器的主词条与副词条。
   支持 `/面板 <UID>` 查询、UID 绑定、定时自动刷新，并自带 WebUI 管理面板。
+  单角色详情会渲染成图片角色卡（头像、光锥、属性条、六件遗器），渲染不可用时自动回退文字。
 
   **安装要求：AstrBot >= 4.5.0，且运行环境必须是 Python 3.11 或更高版本**
   （依赖库 starrail_damage_cal 的硬性要求，低于 3.11 无法安装）。
-version: 1.1.2
+version: 1.2.0
 author: jokerkenny00137
 repo: https://github.com/jokerkenny00137/astrbot-plugin-starrail-lab
 astrbot_version: ">=4.5.0"

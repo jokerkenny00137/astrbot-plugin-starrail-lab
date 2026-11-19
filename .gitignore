@@ -20,6 +20,7 @@ env/
 # ---- 测试与调试产物（本地自用，不随插件发布）----
 test.py
 sample_team.json
+card_preview.html
 .pytest_cache/
 .coverage
 htmlcov/

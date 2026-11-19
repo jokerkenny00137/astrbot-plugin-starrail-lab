@@ -35,6 +35,7 @@ except ImportError:
     error_response = json_response = request = None  # type: ignore[assignment]
 
 try:  # AstrBot 以包的形式加载插件
+    from .panel_card import render_character_card
     from .panel_store import (
         bind_user,
         get_bound_uid,
@@ -57,6 +58,7 @@ try:  # AstrBot 以包的形式加载插件
         set_cache_dir,
     )
 except ImportError:  # 以普通脚本方式被导入时
+    from panel_card import render_character_card
     from panel_store import (
         bind_user,
         get_bound_uid,
@@ -120,6 +122,8 @@ class StarRailPanelPlugin(Star):
         self._data_dir = self._resolve_data_dir()
         self._auto_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
+        # 角色卡渲染一旦失败就本进程内不再尝试，避免每次都卡到超时
+        self._card_broken = False
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
@@ -163,6 +167,39 @@ class StarRailPanelPlugin(Star):
         if uid.isdigit() and len(uid) >= 5:
             return uid
         return get_bound_uid(str(event.get_sender_id())) or ""
+
+    # ------------------------------------------------------------------
+    # 角色卡（图片输出）
+    # ------------------------------------------------------------------
+
+    def _card_enabled(self) -> bool:
+        """当前是否应该尝试渲染角色卡。
+
+        mode:
+            auto  —— 能渲染就发图，失败回退文本（默认）
+            image —— 同上，但会在日志里明确记录失败
+            text  —— 只用文本
+        """
+        mode = str(self.config.get("panel_render_mode", "auto") or "auto").lower()
+        if mode == "text":
+            return False
+        if self._card_broken:
+            return False
+        if not callable(getattr(self, "html_render", None)):
+            if mode == "image":
+                logger.warning(
+                    "[星铁面板] 当前 AstrBot 不支持 html_render，角色卡不可用，已回退文本"
+                )
+            return False
+        return True
+
+    def _card_timeout(self) -> float:
+        """角色卡渲染超时（秒），限制在 5~60 之间。"""
+        try:
+            value = float(self.config.get("card_render_timeout", 15) or 15)
+        except (TypeError, ValueError):
+            return 15.0
+        return max(5.0, min(60.0, value))
 
     # ------------------------------------------------------------------
     # 面板查询
@@ -261,6 +298,20 @@ class StarRailPanelPlugin(Star):
                 f"{uid} 1"
             )
             return
+
+        # 单角色详情：能渲染就发图，渲染不了就退回文本
+        if self._card_enabled():
+            image = await render_character_card(
+                self,
+                panel,
+                uid,
+                result.get("nickname", ""),
+                timeout=self._card_timeout(),
+            )
+            if image:
+                yield event.image_result(image)
+                return
+            self._card_broken = True
 
         for chunk in _split_text(format_character_panel(panel)):
             yield event.plain_result(chunk)
