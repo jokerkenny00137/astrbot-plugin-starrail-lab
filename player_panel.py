@@ -16,10 +16,18 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import unicodedata
 
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
+
+try:  # 在 AstrBot 里用它的 logger，单独跑脚本时退回标准库
+    from astrbot.api import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
 
@@ -52,6 +60,14 @@ try:
 except ImportError:
     LIB_AVAILABLE = False
 
+try:  # 遗器评分（纯文本面板也要显示，库版本太新/太旧都不影响主流程）
+    from .relic_score import get_relic_profile, key_stat_names, score_relic
+except ImportError:
+    try:
+        from relic_score import get_relic_profile, key_stat_names, score_relic
+    except Exception:  # noqa: BLE001 - 评分是可选能力
+        get_relic_profile = key_stat_names = score_relic = None  # type: ignore[assignment]
+
 
 # 属性伤害的中文名。库里的角色属性是英文，这里做一次翻译。
 ELEMENT_CN = {
@@ -78,11 +94,28 @@ def _cache_file(uid: str) -> Path:
     return CACHE_DIR / uid / "rawData.json"
 
 
+def _fresh_raw_cache(uid: str, since: float) -> Dict[str, Any] | None:
+    """这次请求刚写出来、但库解析失败时，直接读原始 JSON。
+
+    api_to_dict 的顺序是「先写 rawData.json，再逐个角色解析」。解析库没收录
+    新角色（比如 avatarId 1511）时会抛 KeyError，但原始数据其实已经完整落盘了，
+    这时重试网络请求毫无意义——直接拿原始数据，交给 query_player 过滤未知角色。
+    """
+    path = _cache_file(uid)
+    try:
+        if not path.exists() or path.stat().st_mtime < since - 1:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 async def _fetch_from_network(uid: str) -> Dict[str, Any]:
     """联网拉取玩家数据，失败自动重试。"""
     last_error: Any = None
 
     for attempt in range(1, MAX_RETRY + 1):
+        started = time.time()
         try:
             # api_to_dict 会把原始数据写到 CACHE_DIR/{uid}/rawData.json
             await api_to_dict(uid=uid, save_path=CACHE_DIR)
@@ -112,7 +145,16 @@ async def _fetch_from_network(uid: str) -> Dict[str, Any]:
             if attempt < MAX_RETRY:
                 await asyncio.sleep(3)
 
-        except Exception as exc:  # 网络波动、接口改版等
+        except Exception as exc:  # 网络波动、解析库不认识新角色等
+            # 解析阶段报错（典型是 KeyError: '1511'），但原始数据已落盘
+            raw = _fresh_raw_cache(uid, started)
+            if raw is not None:
+                logger.warning(
+                    f"[星铁面板] UID {uid} 的解析库报错（{type(exc).__name__}: {exc}），"
+                    "已改用刚下载的原始数据继续解析"
+                )
+                return raw
+
             last_error = exc
             if attempt < MAX_RETRY:
                 await asyncio.sleep(2)
@@ -386,6 +428,18 @@ def _fmt_affix(value: float, is_percent: bool) -> str:
     return _pct(value) if is_percent else f"{value:.1f}"
 
 
+# 单件遗器的满分数，和角色卡片的刻度一致（六件全满 60 分）
+RELIC_MAX_SCORE = 10.0
+
+
+def _fmt_time(ts: Any) -> str:
+    """时间戳 -> 2026-11-19 20:30。"""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OSError):
+        return "未知时间"
+
+
 def format_character_panel(panel: Dict[str, Any]) -> str:
     """单个角色的面板文本。"""
     lines = [
@@ -410,18 +464,43 @@ def format_character_panel(panel: Dict[str, Any]) -> str:
     if extras:
         lines.append("  " + "   ".join(extras))
 
+    # 评分是可选能力：库没收录这个角色，或者 relic_score 导入失败，就不显示分数
+    profile = (
+        get_relic_profile(panel.get("avatar_id"))
+        if get_relic_profile is not None
+        else None
+    )
+    weight = profile["weight"] if profile else {}
+    weight_max = profile["max"] if profile else 0.0
+    can_score = bool(weight and weight_max)
+
     if panel["relics"]:
-        lines.append("  遗器：")
+        total_score = 0.0
+        relic_lines: List[str] = []
         for relic in panel["relics"]:
             main = _fmt_affix(relic["main_value"], relic["main_is_percent"])
-            lines.append(f"    +{relic['level']} {relic['name']}")
-            lines.append(f"       主词条 {relic['main_name']} {main}")
+            header = f"    +{relic['level']} {relic['name']}"
+            if can_score:
+                # 原始分按该角色的理论上限归一化到 10 分制，和卡片保持一致
+                raw = score_relic(relic["subs"], weight)  # type: ignore[misc]
+                score = min(RELIC_MAX_SCORE, raw / weight_max * RELIC_MAX_SCORE)
+                total_score += score
+                header += f"  评分 {score:.1f}"
+            relic_lines.append(header)
+            relic_lines.append(f"       主词条 {relic['main_name']} {main}")
             if relic["subs"]:
                 sub_text = "  ".join(
                     f"{s['name']} {_fmt_affix(s['value'], s['is_percent'])}"
                     for s in relic["subs"]
                 )
-                lines.append(f"       副词条 {sub_text}")
+                relic_lines.append(f"       副词条 {sub_text}")
+
+        title = "  遗器："
+        if can_score:
+            cap = RELIC_MAX_SCORE * len(panel["relics"])
+            title += f"总分 {total_score:.1f} / {cap:.0f}"
+        lines.append(title)
+        lines.extend(relic_lines)
     else:
         lines.append("  遗器：未装备")
 
@@ -434,9 +513,12 @@ def format_player_report(result: Dict[str, Any]) -> str:
     lines = [
         f"【{result.get('nickname', '未知玩家')}】UID {result.get('uid', '')}",
         f"展示柜角色 {len(chars)} 个",
-        "-" * 40,
-        "",
     ]
+    if result.get("updated_at"):
+        lines.append(f"本地数据更新于 {_fmt_time(result['updated_at'])}")
+    if result.get("_notice"):
+        lines.append(f"提示：{result['_notice']}")
+    lines.extend(["-" * 40, ""])
 
     for panel in chars:
         lines.append(format_character_panel(panel))
@@ -467,11 +549,11 @@ def format_character_list(result: Dict[str, Any]) -> str:
     """只列出角色清单，让用户自己挑一个看详情。"""
     chars = result.get("characters", [])
     uid = result.get("uid", "")
-    lines = [
-        f"【{result.get('nickname', '未知玩家')}】UID {uid}",
-        f"展示柜共 {len(chars)} 个角色：",
-        "",
-    ]
+    lines = [f"【{result.get('nickname', '未知玩家')}】UID {uid}"]
+    if result.get("updated_at"):
+        lines.append(f"本地数据更新于 {_fmt_time(result['updated_at'])}")
+    lines.append(f"展示柜共 {len(chars)} 个角色：")
+    lines.append("")
 
     for i, c in enumerate(chars, 1):
         lines.append(
@@ -480,10 +562,14 @@ def format_character_list(result: Dict[str, Any]) -> str:
 
     sample = chars[0]["name"] if chars else "希儿"
     lines.append("")
+    if result.get("_notice"):
+        lines.append(f"提示：{result['_notice']}")
+        lines.append("")
     lines.append("想看哪个角色的详细面板，发：")
     lines.append(f"  /选择查询 角色名      （不用打 UID，如 /选择查询 {sample}）")
     lines.append("  /选择查询 序号        （如 /选择查询 1）")
     lines.append("  /选择查询 全部        （一次看完整份）")
+    lines.append(f"  /面板 {uid} 刷新      （重新拉取最新数据）")
     lines.append(f"  未绑定也可以用：/面板 {uid} 角色名")
     return "\n".join(lines)
 

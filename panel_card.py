@@ -15,13 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import shutil
 import time
 
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from astrbot.api import logger
+try:  # 在 AstrBot 里用它的 logger，单独跑脚本时退回标准库
+    from astrbot.api import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 try:
     import aiohttp
@@ -61,6 +67,60 @@ _IMAGE_CACHE: Dict[str, Tuple[float, str]] = {}
 _IMAGE_TTL = 3600.0  # 缓存 1 小时
 _IMAGE_TIMEOUT = 6.0  # 单张图下载超时
 _IMAGE_MAX_BYTES = 2_000_000  # 超过 2MB 的图不内联（正常素材都在 40KB 内）
+
+# 角色卡本地缓存目录（由 main.py 指到 AstrBot 的 plugin_data 下）
+CARD_CACHE_DIR: Path = CARD_DIR.parent / "data" / "cards"
+CARD_LOG_FILE: Optional[Path] = None
+
+# 最近一次渲染失败的原因，供控制面板自检展示
+LAST_ERROR: str = ""
+LAST_SUCCESS_AT: float = 0.0
+
+
+def set_card_cache_dir(path: str | Path) -> Path:
+    """设置角色卡缓存目录，同时把渲染日志放到同一层。"""
+    global CARD_CACHE_DIR, CARD_LOG_FILE
+    CARD_CACHE_DIR = Path(path)
+    CARD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    CARD_LOG_FILE = CARD_CACHE_DIR.parent / "card_render.log"
+    return CARD_CACHE_DIR
+
+
+def _log(text: str) -> None:
+    """把渲染相关的关键事件写进插件自己的日志文件，方便排查。
+
+    AstrBot 主日志需要开 DEBUG 才能看到细节，这里单独记一份，路径固定、
+    只追加，用户可以直接把文件发出来定位问题。
+    """
+    if not CARD_LOG_FILE:
+        return
+    try:
+        CARD_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with CARD_LOG_FILE.open("a", encoding="utf-8") as fp:
+            fp.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
+    except OSError:
+        pass
+
+
+def card_image_path(uid: Any, panel: Dict[str, Any]) -> Path:
+    key = panel.get("avatar_id") or panel.get("name") or "unknown"
+    return CARD_CACHE_DIR / str(uid) / f"{key}.png"
+
+
+def card_html_path(uid: Any, panel: Dict[str, Any]) -> Path:
+    key = panel.get("avatar_id") or panel.get("name") or "unknown"
+    return CARD_CACHE_DIR / str(uid) / f"{key}.html"
+
+
+def get_render_status() -> Dict[str, Any]:
+    """给控制面板自检用的渲染状态。"""
+    return {
+        "last_error": LAST_ERROR,
+        "last_success_at": LAST_SUCCESS_AT,
+        "cache_dir": str(CARD_CACHE_DIR),
+        "log_file": str(CARD_LOG_FILE) if CARD_LOG_FILE else "",
+        "cached_cards": sum(1 for _ in CARD_CACHE_DIR.glob("*/*.png")),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -332,27 +392,132 @@ def _load_template() -> str:
     return TEMPLATE_FILE.read_text(encoding="utf-8")
 
 
+async def build_card_html(
+    panel: Dict[str, Any],
+    uid: str,
+    nickname: str = "",
+    inline_images: bool = True,
+) -> str:
+    """本地生成完整角色卡 HTML（不依赖 html_render）。
+
+    图片会被内嵌成 base64，所以保存下来的 HTML 单独打开也能正常显示，
+    控制面板可以直接用 iframe 预览。
+    """
+    data = build_card_data(panel, uid, nickname)
+    if inline_images:
+        await inline_card_images(data)
+
+    from jinja2 import Environment
+
+    env = Environment(autoescape=True)
+    return env.from_string(_load_template()).render(**data)
+
+
+async def save_card_html(
+    panel: Dict[str, Any],
+    uid: str,
+    nickname: str = "",
+) -> Optional[Path]:
+    """把角色卡 HTML 存到本地，返回文件路径。失败返回 None。"""
+    path = card_html_path(uid, panel)
+    try:
+        html = await build_card_html(panel, uid, nickname)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+        return path
+    except Exception as exc:
+        _log(f"保存角色卡 HTML 失败（{uid} / {panel.get('name')}）：{type(exc).__name__}: {exc}")
+        logger.warning(f"[星铁面板] 保存角色卡 HTML 失败：{type(exc).__name__}: {exc}")
+        return None
+
+
+async def _store_image(result: str, path: Path) -> bool:
+    """把 html_render 的结果（URL 或本地文件）落到缓存目录。"""
+    if not result:
+        return False
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if result.startswith(("http://", "https://")):
+            if aiohttp is None:
+                return False
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    result, timeout=aiohttp.ClientTimeout(total=20)
+                ) as resp:
+                    if resp.status != 200:
+                        return False
+                    raw = await resp.read()
+            if not raw:
+                return False
+            path.write_bytes(raw)
+            return True
+
+        src = Path(result[7:] if result.startswith("file://") else result)
+        if not src.exists():
+            return False
+        if src.resolve() != path.resolve():
+            shutil.copyfile(src, path)
+        return True
+    except Exception as exc:
+        _log(f"缓存角色卡图片失败：{type(exc).__name__}: {exc}")
+        return False
+
+
+def _cache_usable(path: Path, fresh_after: float, max_age: float) -> bool:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    now = time.time()
+    if fresh_after and mtime < fresh_after - 2:
+        return False
+    return now - mtime < max_age
+
+
 async def render_character_card(
     star: Any,
     panel: Dict[str, Any],
     uid: str,
     nickname: str = "",
     timeout: float = 15.0,
+    fresh_after: float = 0.0,
+    save_html: bool = False,
+    use_cache: bool = True,
 ) -> Optional[str]:
     """渲染角色卡，返回图片 URL 或本地路径；失败返回 None。
 
     timeout 必须有：渲染服务不可达时不能拖住整轮对话。
+    fresh_after：面板数据的更新时间。缓存图比数据旧就重新渲染，
+    避免玩家换了遗器之后还发旧卡。
     """
+    global LAST_ERROR, LAST_SUCCESS_AT
+
+    cache_path = card_image_path(uid, panel)
+    if use_cache and _cache_usable(cache_path, fresh_after, 7 * 86400):
+        logger.debug(f"[星铁面板] 角色卡命中本地缓存：{cache_path}")
+        return str(cache_path)
+
+    def stale_cache() -> Optional[str]:
+        """渲染失败时，宁可发一张旧图也别退化成纯文字。"""
+        if use_cache and cache_path.exists():
+            _log(f"渲染失败，退回上一次的缓存图（{panel.get('name')}）")
+            return str(cache_path)
+        return None
+
     render = getattr(star, "html_render", None)
     if not callable(render):
-        return None
+        LAST_ERROR = "当前 AstrBot 没有 html_render，无法渲染图片"
+        return stale_cache()
 
     try:
         template = _load_template()
         data = build_card_data(panel, uid, nickname)
-    except Exception:
+    except Exception as exc:
+        LAST_ERROR = f"模板/数据准备失败：{type(exc).__name__}: {exc}"
+        _log(f"角色卡准备失败（{panel.get('name')}）：{LAST_ERROR}")
         logger.exception("[星铁面板] 角色卡模板/数据准备失败")
-        return None
+        return stale_cache()
 
     # 图片先内嵌，避免渲染端拉不到图或截到空图
     inlined = await inline_card_images(data)
@@ -360,29 +525,44 @@ async def render_character_card(
         logger.warning("[星铁面板] 角色卡图片一张都没内联成功，渲染结果可能缺图")
 
     started = time.time()
-    last_error: Optional[str] = None
-
     for attempt in (1, 2):
         try:
             result = await asyncio.wait_for(
                 render(template, data, return_url=True, options={"full_page": True}),
                 timeout=timeout,
             )
-            logger.debug(
-                f"[星铁面板] 角色卡渲染成功：耗时 {time.time() - started:.1f}s，"
-                f"内联图片 {inlined} 张"
-            )
-            return result
         except asyncio.TimeoutError:
             # 超时说明渲染端点已经卡住，重试只会让用户多等一轮
+            LAST_ERROR = f"渲染超时（{timeout:.0f} 秒）"
+            _log(f"角色卡渲染超时（{timeout:.0f}s，{panel.get('name')}）")
             logger.warning(f"[星铁面板] 角色卡渲染超时（{timeout:.0f}s）")
-            return None
+            return stale_cache()
         except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+            LAST_ERROR = f"{type(exc).__name__}: {exc}"
             if attempt == 1:
-                logger.warning(f"[星铁面板] 角色卡渲染失败，1 秒后重试：{last_error}")
+                logger.warning(f"[星铁面板] 角色卡渲染失败，1 秒后重试：{LAST_ERROR}")
                 await asyncio.sleep(1)
                 continue
-            logger.warning(f"[星铁面板] 角色卡渲染失败：{last_error}")
+            _log(f"角色卡渲染失败（{panel.get('name')}）：{LAST_ERROR}")
+            logger.warning(f"[星铁面板] 角色卡渲染失败：{LAST_ERROR}")
+            return stale_cache()
+
+        LAST_ERROR = ""
+        LAST_SUCCESS_AT = time.time()
+        logger.debug(
+            f"[星铁面板] 角色卡渲染成功：耗时 {LAST_SUCCESS_AT - started:.1f}s，"
+            f"内联图片 {inlined} 张"
+        )
+
+        if await _store_image(result, cache_path):
+            _log(
+                f"角色卡已缓存（{uid} / {panel.get('name')}）："
+                f"{cache_path.name}，内联 {inlined} 张"
+            )
+            if save_html:
+                await save_card_html(panel, uid, nickname)
+            return str(cache_path)
+
+        return result
 
     return None

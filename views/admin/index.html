@@ -10,66 +10,188 @@
     <div class="wrap">
       <header class="page-head">
         <h1>星穹铁道面板查询</h1>
-        <p class="sub">管理 QQ 与游戏 UID 的绑定关系，并刷新角色面板数据</p>
+        <p class="sub">管理绑定、查看本地存档的面板与角色卡、调整插件设置</p>
       </header>
 
-      <section class="card">
-        <div class="card-head">
-          <h2>新增绑定</h2>
-        </div>
-        <form id="add-form" class="row">
-          <input
-            id="input-qq"
-            placeholder="QQ 号"
-            inputmode="numeric"
-            autocomplete="off"
-          />
-          <input
-            id="input-uid"
-            placeholder="游戏 UID"
-            inputmode="numeric"
-            autocomplete="off"
-          />
-          <button type="submit" class="primary">添加</button>
-        </form>
-        <p id="add-msg" class="msg"></p>
-      </section>
+      <nav class="tabs">
+        <button class="tab active" data-tab="bindings">绑定管理</button>
+        <button class="tab" data-tab="players">玩家数据</button>
+        <button class="tab" data-tab="settings">设置</button>
+        <button class="tab" data-tab="diagnose">自检</button>
+      </nav>
 
-      <section class="card">
-        <div class="card-head">
-          <h2>
-            已绑定
-            <span id="total" class="badge">0</span>
-          </h2>
-          <div class="actions">
-            <button id="btn-refresh-all" class="ghost">刷新全部</button>
-            <button id="btn-reload" class="ghost">重新加载</button>
+      <!-- ================= 绑定管理 ================= -->
+      <div class="tab-panel active" id="tab-bindings">
+        <section class="card">
+          <div class="card-head">
+            <h2>新增绑定</h2>
           </div>
-        </div>
+          <form id="add-form" class="row">
+            <input
+              id="input-qq"
+              placeholder="QQ 号"
+              inputmode="numeric"
+              autocomplete="off"
+            />
+            <input
+              id="input-uid"
+              placeholder="游戏 UID"
+              inputmode="numeric"
+              autocomplete="off"
+            />
+            <button type="submit" class="primary">添加</button>
+          </form>
+          <p id="add-msg" class="msg"></p>
+        </section>
 
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>QQ</th>
-                <th>UID</th>
-                <th>昵称</th>
-                <th>面板更新</th>
-                <th class="col-actions">操作</th>
-              </tr>
-            </thead>
-            <tbody id="tbody">
-              <tr>
-                <td colspan="5" class="empty">加载中…</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p id="table-msg" class="msg"></p>
-      </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>
+              已绑定
+              <span id="total" class="badge">0</span>
+            </h2>
+            <div class="actions">
+              <button id="btn-refresh-all" class="ghost">刷新全部</button>
+              <button id="btn-reload" class="ghost">重新加载</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>QQ</th>
+                  <th>UID</th>
+                  <th>昵称</th>
+                  <th>面板更新</th>
+                  <th class="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="tbody">
+                <tr>
+                  <td colspan="5" class="empty">加载中…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p id="table-msg" class="msg"></p>
+        </section>
+      </div>
+
+      <!-- ================= 玩家数据 ================= -->
+      <div class="tab-panel" id="tab-players">
+        <section class="card">
+          <div class="card-head">
+            <h2>
+              本地存档
+              <span id="panel-total" class="badge">0</span>
+            </h2>
+            <div class="actions">
+              <button id="btn-panels-reload" class="ghost">重新加载</button>
+            </div>
+          </div>
+          <p class="muted" id="last-update"></p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>UID</th>
+                  <th>昵称</th>
+                  <th>角色数</th>
+                  <th>数据更新时间</th>
+                  <th class="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="panels-tbody">
+                <tr>
+                  <td colspan="5" class="empty">加载中…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p id="panels-msg" class="msg"></p>
+        </section>
+
+        <section class="card" id="detail-card" hidden>
+          <div class="card-head">
+            <h2 id="detail-title">角色详情</h2>
+            <div class="actions">
+              <button id="btn-detail-refresh" class="ghost">刷新这个玩家</button>
+              <button id="btn-detail-close" class="ghost">关闭</button>
+            </div>
+          </div>
+
+          <div class="detail-body">
+            <div class="char-list" id="char-list"></div>
+            <div class="preview" id="preview">
+              <p class="muted" id="preview-tip">选择左侧角色查看角色卡</p>
+              <div id="preview-img-wrap" hidden>
+                <img id="preview-img" alt="角色卡" />
+              </div>
+              <iframe
+                id="preview-frame"
+                title="角色卡预览"
+                sandbox=""
+                hidden
+              ></iframe>
+            </div>
+          </div>
+          <div class="actions preview-actions" id="preview-actions" hidden>
+            <button id="btn-show-image" class="ghost">图片</button>
+            <button id="btn-show-html" class="ghost">HTML 原始卡片</button>
+            <button id="btn-show-text" class="ghost">文字面板</button>
+          </div>
+          <pre id="preview-text" class="preview-text" hidden></pre>
+        </section>
+      </div>
+
+      <!-- ================= 设置 ================= -->
+      <div class="tab-panel" id="tab-settings">
+        <section class="card">
+          <div class="card-head">
+            <h2>插件设置</h2>
+            <div class="actions">
+              <button id="btn-settings-reload" class="ghost">重新读取</button>
+            </div>
+          </div>
+          <p class="muted">
+            保存后会写回插件配置并立即生效（自动更新间隔会重启定时任务）。
+          </p>
+          <form id="settings-form" class="settings-form"></form>
+          <div class="actions">
+            <button type="button" id="btn-settings-save" class="primary">
+              保存设置
+            </button>
+          </div>
+          <p id="settings-msg" class="msg"></p>
+        </section>
+      </div>
+
+      <!-- ================= 自检 ================= -->
+      <div class="tab-panel" id="tab-diagnose">
+        <section class="card">
+          <div class="card-head">
+            <h2>环境自检</h2>
+            <div class="actions">
+              <button id="btn-diagnose" class="ghost">运行自检</button>
+            </div>
+          </div>
+          <p class="muted">
+            刷新失败、角色卡不出图时先看这里：能直接定位是解析库、渲染服务还是
+            图片下载的问题。
+          </p>
+          <div id="checks" class="checks"></div>
+          <div class="table-wrap" id="diag-info-wrap">
+            <table class="kv-table">
+              <tbody id="diag-info"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
 
       <footer class="foot">
-        数据来自玩家公开的角色展示柜，缓存保存在 AstrBot 的 plugin_data 目录。
+        数据来自玩家公开的角色展示柜；面板与角色卡会在刷新时保存到 AstrBot 的
+        plugin_data 目录，查询时优先使用本地数据。
       </footer>
     </div>
 

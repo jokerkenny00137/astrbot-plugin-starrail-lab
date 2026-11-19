@@ -220,11 +220,267 @@ td.acts button {
   color: var(--danger);
 }
 
+.msg.warn {
+  color: #b45309;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+/* ---------------- 标签页 ---------------- */
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.tab {
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-text);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* ---------------- 角色卡预览 ---------------- */
+
+.detail-body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.char-list {
+  flex: 0 0 200px;
+  max-height: 660px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.char-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.char-item.active {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.char-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.char-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.06);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+#preview-img {
+  max-width: 100%;
+  border-radius: 10px;
+  display: block;
+}
+
+#preview-frame {
+  width: 760px;
+  max-width: 100%;
+  height: 900px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.preview-actions {
+  margin-top: 10px;
+}
+
+.preview-text {
+  margin: 10px 0 0;
+  padding: 12px;
+  background: rgba(127, 127, 127, 0.08);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* ---------------- 设置 ---------------- */
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 220px 180px 1fr;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 12px;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.setting-control input,
+.setting-control select {
+  width: 100%;
+  flex: none;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.setting-control input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  appearance: auto;
+  flex: none;
+}
+
+.setting-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------------- 自检 ---------------- */
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+
+.check.ok {
+  border-color: rgba(5, 150, 105, 0.35);
+}
+
+.check.bad {
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.check-mark {
+  font-weight: 700;
+}
+
+.check.ok .check-mark {
+  color: var(--ok);
+}
+
+.check.bad .check-mark {
+  color: var(--danger);
+}
+
+.check-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.check-detail {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.kv-table th {
+  width: 200px;
+  font-weight: 500;
+}
+
+.kv-table td {
+  white-space: normal;
+  word-break: break-all;
+}
+
 .foot {
   color: var(--muted);
   font-size: 12px;
   text-align: center;
   padding: 4px 0 12px;
+}
+
+@media (max-width: 760px) {
+  .detail-body {
+    flex-direction: column;
+  }
+
+  .char-list {
+    flex: none;
+    width: 100%;
+    max-height: 200px;
+  }
+
+  .setting-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  #preview-frame {
+    width: 100%;
+    height: 640px;
+  }
 }
 
 @media (max-width: 600px) {

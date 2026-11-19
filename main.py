@@ -10,18 +10,23 @@
 
     /绑定 <UID>              把自己的 QQ 与游戏 UID 绑定
     /解绑                    解除绑定
+    /刷新全部面板            管理员指令，后台刷新所有已绑定 / 已存档玩家
 
 特性：
+    * 查询默认读本地存档，只有「刷新」/ 管理员 / 定时任务才联网
     * 用户查完面板继续聊天时，数据会自动注入 AI 上下文，让 AI 能据此给建议
     * 支持定时自动更新所有已绑定玩家的面板数据
+    * 刷新后在后台预渲染角色卡到本地，查询时优先发本地图
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 
 from pathlib import Path
+from typing import Any, Dict, List
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -36,11 +41,21 @@ except ImportError:
     error_response = json_response = request = None  # type: ignore[assignment]
 
 try:  # AstrBot 以包的形式加载插件
-    from .panel_card import render_character_card
+    from .panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
+    from .panel_card import (
+        build_card_html,
+        card_html_path,
+        card_image_path,
+        get_render_status,
+        render_character_card,
+        save_card_html,
+        set_card_cache_dir,
+    )
     from .panel_store import (
         bind_user,
         get_bound_uid,
         get_last_query,
+        get_panel,
         list_bindings,
         list_panels,
         save_last_query,
@@ -49,6 +64,7 @@ try:  # AstrBot 以包的形式加载插件
         unbind_user,
     )
     from .player_panel import (
+        LIB_AVAILABLE,
         PlayerQueryError,
         build_llm_summary,
         find_character,
@@ -59,11 +75,21 @@ try:  # AstrBot 以包的形式加载插件
         set_cache_dir,
     )
 except ImportError:  # 以普通脚本方式被导入时
-    from panel_card import render_character_card
+    from panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
+    from panel_card import (
+        build_card_html,
+        card_html_path,
+        card_image_path,
+        get_render_status,
+        render_character_card,
+        save_card_html,
+        set_card_cache_dir,
+    )
     from panel_store import (
         bind_user,
         get_bound_uid,
         get_last_query,
+        get_panel,
         list_bindings,
         list_panels,
         save_last_query,
@@ -72,6 +98,7 @@ except ImportError:  # 以普通脚本方式被导入时
         unbind_user,
     )
     from player_panel import (
+        LIB_AVAILABLE,
         PlayerQueryError,
         build_llm_summary,
         find_character,
@@ -100,6 +127,55 @@ ALL_WORDS = {"全部", "所有", "全", "all"}
 # 注入 AI 上下文的默认有效期（秒），可在插件配置里改
 DEFAULT_CONTEXT_TTL = 1800
 
+# 控制面板能改的设置。类型、范围和默认值都写在这里，前端只负责展示。
+SETTING_SPECS = {
+    "panel_render_mode": {
+        "label": "角色详情输出方式",
+        "type": "select",
+        "options": ["auto", "image", "text"],
+        "default": "auto",
+        "hint": "auto：能出图就出图，失败回退文字；image：同 auto，但失败会写日志；text：只用文字",
+    },
+    "card_render_timeout": {
+        "label": "角色卡渲染超时（秒）",
+        "type": "int",
+        "min": 5,
+        "max": 60,
+        "default": 15,
+        "hint": "超过这个时间还没渲染完就回退文字，范围 5~60",
+    },
+    "card_fail_cooldown_minutes": {
+        "label": "角色卡失败后冷却（分钟）",
+        "type": "int",
+        "min": 0,
+        "max": 120,
+        "default": 5,
+        "hint": "渲染失败后这段时间内直接走文字，填 0 表示每次都尝试",
+    },
+    "auto_update_minutes": {
+        "label": "自动更新间隔（分钟）",
+        "type": "int",
+        "min": 0,
+        "max": 1440,
+        "default": 0,
+        "hint": "填 0 表示关闭；修改后立即生效",
+    },
+    "llm_context_ttl_minutes": {
+        "label": "面板数据注入 AI 上下文的有效期（分钟）",
+        "type": "int",
+        "min": 0,
+        "max": 1440,
+        "default": 30,
+        "hint": "查完面板后这段时间内继续聊天，插件会把数据交给 AI 参考",
+    },
+    "precache_cards": {
+        "label": "刷新后自动预渲染角色卡",
+        "type": "bool",
+        "default": True,
+        "hint": "刷新数据后在后台把角色卡存到本地，查询时直接发本地图，减少渲染失败",
+    },
+}
+
 
 def _split_text(text: str, limit: int = MAX_CHUNK) -> list[str]:
     """按行切分长文本。"""
@@ -116,6 +192,28 @@ def _split_text(text: str, limit: int = MAX_CHUNK) -> list[str]:
     return chunks or [text]
 
 
+def _fmt_ts(ts: Any) -> str:
+    """时间戳 -> 2026-11-19 20:30。"""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OSError):
+        return "未知时间"
+
+
+def _lib_version() -> str:
+    """starrail_damage_cal 的版本号，自检用。"""
+    try:
+        from importlib.metadata import version
+    except ImportError:
+        return ""
+    for name in ("starrail-damage-cal", "starrail_damage_cal"):
+        try:
+            return version(name)
+        except Exception:
+            continue
+    return ""
+
+
 class StarRailPanelPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -123,10 +221,16 @@ class StarRailPanelPlugin(Star):
         self._data_dir = self._resolve_data_dir()
         self._auto_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._precache_task: asyncio.Task | None = None
+        # 预渲染排队：批量刷新时逐个来，避免同时压垮渲染服务
+        self._precache_queue: List[tuple[str, Dict[str, Any]]] = []
         # 渲染失败后进入冷却期，冷却结束会重新尝试出图
         self._card_fail_until = 0.0
         # 当前环境根本没有 html_render 时永久关闭
         self._card_disabled = False
+        # 最近一次数据更新的结果，给控制面板看
+        self._last_update_at = 0.0
+        self._last_update_msg = ""
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
@@ -152,6 +256,7 @@ class StarRailPanelPlugin(Star):
         data_dir.mkdir(parents=True, exist_ok=True)
         set_cache_dir(data_dir / "cache")
         set_db_path(data_dir / "starrail.db")
+        set_card_cache_dir(data_dir / "cards")
         return data_dir
 
     def _session_key(self, event: AstrMessageEvent) -> str:
@@ -262,24 +367,46 @@ class StarRailPanelPlugin(Star):
         if force_refresh:
             extra = ""
 
-        try:
-            result = await asyncio.wait_for(
-                query_player(uid, force_refresh=force_refresh),
-                timeout=QUERY_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            yield event.plain_result(
-                f"查询超时了（超过 {QUERY_TIMEOUT} 秒）。\n"
-                "公共数据接口有时会排队，稍后再试一次吧。"
-            )
-            return
-        except PlayerQueryError as exc:
-            yield event.plain_result(f"查询失败：{exc}")
-            return
-        except Exception as exc:
-            logger.exception(f"[星铁面板] 查询 UID {uid} 时出错")
-            yield event.plain_result(f"查询出错了：{type(exc).__name__}: {exc}")
-            return
+        # 本地优先：数据库里已经有这个 UID 的面板就直接用，只有「刷新」才联网。
+        # 这样玩家查询不会被公共接口的排队/解析库滞后卡住。
+        result = None
+        fetched = False
+        if not force_refresh:
+            result = self._local_panel(uid)
+            if result is not None:
+                logger.debug(f"[星铁面板] UID {uid} 使用本地存档")
+
+        if result is None:
+            try:
+                result = await asyncio.wait_for(
+                    query_player(uid, force_refresh=force_refresh),
+                    timeout=QUERY_TIMEOUT,
+                )
+                fetched = True
+            except asyncio.TimeoutError:
+                result = self._local_panel(uid)
+                if result is None:
+                    yield event.plain_result(
+                        f"查询超时了（超过 {QUERY_TIMEOUT} 秒）。\n"
+                        "公共数据接口有时会排队，稍后再试一次吧。"
+                    )
+                    return
+                result["_notice"] = (
+                    f"刷新超时（超过 {QUERY_TIMEOUT} 秒），先给你看上次保存的数据"
+                )
+            except PlayerQueryError as exc:
+                result = self._local_panel(uid)
+                if result is None:
+                    yield event.plain_result(f"查询失败：{exc}")
+                    return
+                result["_notice"] = f"刷新失败（{exc}），先给你看上次保存的数据"
+            except Exception as exc:
+                logger.exception(f"[星铁面板] 查询 UID {uid} 时出错")
+                result = self._local_panel(uid)
+                if result is None:
+                    yield event.plain_result(f"查询出错了：{type(exc).__name__}: {exc}")
+                    return
+                result["_notice"] = f"刷新出错（{type(exc).__name__}），先给你看上次保存的数据"
 
         if not result.get("ok"):
             yield event.plain_result(
@@ -288,8 +415,16 @@ class StarRailPanelPlugin(Star):
             )
             return
 
-        # 存档，供 AI 上下文注入和定时更新使用
-        self._remember(self._session_key(event), uid, result)
+        if fetched:
+            # 刚拉下来的新数据：入库 + 后台预渲染角色卡
+            result["updated_at"] = time.time()
+
+        # 本地存档也要写一份「最近查询」，否则本地优先之后 AI 拿不到上下文
+        self._remember(
+            self._session_key(event), uid, result, save_archive=fetched
+        )
+        if fetched:
+            self._schedule_precache(uid, result)
 
         # ---- 决定输出什么 ----
         if not extra:
@@ -313,7 +448,7 @@ class StarRailPanelPlugin(Star):
             )
             return
 
-        # 单角色详情：能渲染就发图，渲染不了就退回文本
+        # 单角色详情：优先用本地缓存的图片，没有再走 html_render
         if self._card_enabled():
             image = await render_character_card(
                 self,
@@ -321,6 +456,7 @@ class StarRailPanelPlugin(Star):
                 uid,
                 result.get("nickname", ""),
                 timeout=self._card_timeout(),
+                fresh_after=float(result.get("updated_at") or 0),
             )
             if image:
                 yield event.image_result(image)
@@ -333,7 +469,13 @@ class StarRailPanelPlugin(Star):
                     f"[星铁面板] 角色卡渲染失败，{minutes:.0f} 分钟内改用文本输出"
                 )
 
-        for chunk in _split_text(format_character_panel(panel)):
+        text = format_character_panel(panel)
+        if result.get("updated_at"):
+            text += (
+                f"\n  数据更新于 {_fmt_ts(result['updated_at'])}"
+                f"（/面板 {uid} 刷新 可更新）"
+            )
+        for chunk in _split_text(text):
             yield event.plain_result(chunk)
 
     @filter.command("选择查询", alias={"选角色", "看角色", "查询角色"})
@@ -354,14 +496,117 @@ class StarRailPanelPlugin(Star):
         async for chunk in self.query_panel(event, uid, (target or "").strip()):
             yield chunk
 
-    def _remember(self, session_key: str, uid: str, result: dict) -> None:
-        """把这次查询存下来：会话上下文 + 完整存档。"""
+    def _local_panel(self, uid: str) -> Dict[str, Any] | None:
+        """读本地存档。没有或为空返回 None。"""
+        try:
+            data = get_panel(uid)
+        except Exception:
+            logger.exception(f"[星铁面板] 读取本地存档失败（UID {uid}）")
+            return None
+        if not data or not data.get("characters"):
+            return None
+        return data
+
+    def _remember(
+        self,
+        session_key: str,
+        uid: str,
+        result: dict,
+        save_archive: bool = True,
+    ) -> None:
+        """把这次查询存下来：会话上下文 + 完整存档。
+
+        save_archive=False 只刷新「最近查询」（给 AI 上下文用），不动面板存档，
+        用于本地优先的日常查询。
+        """
         try:
             summary = build_llm_summary(result)
             save_last_query(session_key, uid, result.get("nickname", ""), summary)
-            save_panel(uid, result.get("nickname", ""), result)
+            if save_archive and result.get("ok"):
+                save_panel(uid, result.get("nickname", ""), result)
+                self._last_update_at = float(result.get("updated_at") or time.time())
+                self._last_update_msg = (
+                    f"UID {uid} 更新成功，共 {len(result.get('characters') or [])} 个角色"
+                )
         except Exception:
             logger.exception("[星铁面板] 保存查询记录失败")
+
+    # ------------------------------------------------------------------
+    # 角色卡本地预渲染
+    # ------------------------------------------------------------------
+
+    def _precache_enabled(self) -> bool:
+        value = self.config.get("precache_cards", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _schedule_precache(self, uid: str, result: Dict[str, Any]) -> None:
+        """刷新成功后，在后台把角色卡渲染到本地，下次查询直接发本地图。"""
+        if not self._precache_enabled():
+            return
+        if not callable(getattr(self, "html_render", None)):
+            return
+        # 同一个 UID 只保留最新一份，避免队列里堆旧数据
+        self._precache_queue = [
+            item for item in self._precache_queue if item[0] != uid
+        ]
+        self._precache_queue.append((uid, result))
+        self._precache_queue = self._precache_queue[-20:]
+
+        if not self._precache_task or self._precache_task.done():
+            self._precache_task = asyncio.create_task(self._precache_worker())
+
+    async def _precache_worker(self) -> None:
+        """串行消费预渲染队列。"""
+        while self._precache_queue:
+            uid, result = self._precache_queue.pop(0)
+            try:
+                await self._precache_cards(uid, result)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(f"[星铁面板] 预渲染 UID {uid} 时出错")
+
+    async def _precache_cards(self, uid: str, result: Dict[str, Any]) -> None:
+        """最多预渲染 12 个角色；连续失败 3 次就停，避免拖垮渲染服务。"""
+        chars = list(result.get("characters") or [])[:12]
+        nickname = result.get("nickname", "")
+        fresh_after = float(result.get("updated_at") or 0)
+        ok = 0
+        failed = 0
+
+        for panel in chars:
+            if not self._card_enabled():
+                break
+            image = await render_character_card(
+                self,
+                panel,
+                uid,
+                nickname,
+                timeout=self._card_timeout(),
+                fresh_after=fresh_after,
+                save_html=True,
+            )
+            if image:
+                ok += 1
+                failed = 0
+            else:
+                failed += 1
+                if failed >= 3:
+                    minutes = self._card_cooldown()
+                    if minutes > 0:
+                        self._card_fail_until = time.time() + minutes * 60
+                    logger.warning(
+                        f"[星铁面板] 预渲染连续失败 {failed} 次，暂停角色卡渲染 "
+                        f"{minutes:.0f} 分钟"
+                    )
+                    break
+            await asyncio.sleep(1)
+
+        logger.info(
+            f"[星铁面板] UID {uid} 角色卡预渲染完成：成功 {ok}，失败 {failed}"
+        )
 
     # ------------------------------------------------------------------
     # 让 AI 能看见这些数据
@@ -454,6 +699,20 @@ class StarRailPanelPlugin(Star):
         for chunk in _split_text("\n".join(lines)):
             yield event.plain_result(chunk)
 
+    @filter.command("刷新全部面板", alias={"更新全部面板"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def refresh_all_panels(self, event: AstrMessageEvent):
+        """后台刷新所有本地存档玩家（仅管理员）。"""
+        if self._refresh_task and not self._refresh_task.done():
+            yield event.plain_result("已经在刷新中，请稍候")
+            return
+
+        self._refresh_task = asyncio.create_task(self._update_all_bound())
+        yield event.plain_result(
+            "已开始后台刷新所有已绑定 / 已存档玩家。\n"
+            "完成后可以在控制面板「玩家数据」页查看结果。"
+        )
+
     # ------------------------------------------------------------------
     # 定时自动更新
     # ------------------------------------------------------------------
@@ -471,22 +730,39 @@ class StarRailPanelPlugin(Star):
 
     async def _update_all_bound(self) -> None:
         uids = {row["uid"] for row in list_bindings(1000)}
+        # 本地存档里的玩家也一起更新，避免只刷绑定用户、其他人数据永远停在旧版本
+        try:
+            uids |= {row["uid"] for row in list_panels()}
+        except Exception:
+            logger.exception("[星铁面板] 读取本地存档列表失败")
+
         if not uids:
-            logger.info("[星铁面板] 自动更新：没有绑定记录，跳过")
+            logger.info("[星铁面板] 自动更新：没有绑定记录或存档，跳过")
             return
 
         ok = 0
+        failed: List[str] = []
         for uid in uids:
             try:
                 result = await query_player(uid, force_refresh=True)
                 if result.get("ok"):
+                    result["updated_at"] = time.time()
                     save_panel(uid, result.get("nickname", ""), result)
+                    self._schedule_precache(uid, result)
                     ok += 1
+                else:
+                    failed.append(f"{uid}(无角色)")
             except Exception as exc:
                 logger.warning(f"[星铁面板] 自动更新 UID {uid} 失败：{exc}")
+                failed.append(f"{uid}({type(exc).__name__})")
             await asyncio.sleep(2)  # 别把公共接口打爆
 
-        logger.info(f"[星铁面板] 自动更新完成：成功 {ok}/{len(uids)}")
+        self._last_update_at = time.time()
+        self._last_update_msg = (
+            f"自动更新完成：成功 {ok}/{len(uids)}"
+            + (f"，失败：{'、'.join(failed[:5])}" if failed else "")
+        )
+        logger.info(f"[星铁面板] {self._last_update_msg}")
 
     # ------------------------------------------------------------------
     # 控制面板后端接口（供 views/admin 页面调用）
@@ -506,6 +782,12 @@ class StarRailPanelPlugin(Star):
             ("/bindings/delete", self.api_delete_binding, ["POST"], "删除绑定"),
             ("/refresh", self.api_refresh_one, ["POST"], "刷新单个玩家面板"),
             ("/refresh_all", self.api_refresh_all, ["POST"], "刷新全部绑定玩家"),
+            ("/panels", self.api_panels, ["GET"], "列出本地已存档玩家"),
+            ("/panel", self.api_panel_detail, ["POST"], "读取某个玩家的面板数据"),
+            ("/card", self.api_card, ["POST"], "生成/读取角色卡预览"),
+            ("/settings", self.api_settings, ["GET"], "读取插件设置"),
+            ("/settings/save", self.api_save_settings, ["POST"], "保存插件设置"),
+            ("/diagnose", self.api_diagnose, ["GET"], "环境自检"),
         ]
 
         registered = 0
@@ -603,13 +885,20 @@ class StarRailPanelPlugin(Star):
             return error_response(f"{type(exc).__name__}: {exc}", status_code=500)
 
         if result.get("ok"):
+            result["updated_at"] = time.time()
             save_panel(uid, result.get("nickname", ""), result)
+            self._last_update_at = result["updated_at"]
+            self._last_update_msg = (
+                f"UID {uid} 手动刷新成功，共 {len(result.get('characters') or [])} 个角色"
+            )
+            self._schedule_precache(uid, result)
 
         return json_response(
             {
                 "ok": bool(result.get("ok")),
                 "nickname": result.get("nickname", ""),
                 "characters": len(result.get("characters", [])),
+                "updated_at": result.get("updated_at", 0),
             }
         )
 
@@ -622,10 +911,329 @@ class StarRailPanelPlugin(Star):
         return json_response({"started": True, "message": "已开始后台刷新"})
 
     # ------------------------------------------------------------------
+    # 本地存档 / 角色卡预览
+    # ------------------------------------------------------------------
+
+    async def api_panels(self):
+        """GET 本地已存档的玩家列表（含角色数量）。"""
+        try:
+            rows = list_panels()
+        except Exception as exc:
+            logger.exception("[星铁面板] 读取本地存档失败")
+            return error_response(f"读取数据库失败：{exc}", status_code=500)
+
+        data = []
+        for row in rows:
+            item = dict(row)
+            try:
+                panel = get_panel(row["uid"]) or {}
+                item["characters"] = len(panel.get("characters") or [])
+            except Exception:
+                item["characters"] = 0
+            data.append(item)
+
+        return json_response(
+            {
+                "panels": data,
+                "total": len(data),
+                "last_update_at": self._last_update_at,
+                "last_update_msg": self._last_update_msg,
+            }
+        )
+
+    async def api_panel_detail(self):
+        """POST {uid} 读取某个玩家的本地面板数据。"""
+        payload = await request.json(default={})
+        uid = str(payload.get("uid", "")).strip()
+        if not uid.isdigit():
+            return error_response("UID 必须是纯数字")
+
+        result = self._local_panel(uid)
+        if result is None:
+            return error_response("这个 UID 还没有本地存档，点「刷新」拉取一次", status_code=404)
+
+        return json_response(result)
+
+    async def api_card(self):
+        """POST {uid, name} 返回角色卡预览（HTML + 本地图片）。"""
+        payload = await request.json(default={})
+        uid = str(payload.get("uid", "")).strip()
+        target = str(payload.get("name", "")).strip()
+        if not uid.isdigit():
+            return error_response("UID 必须是纯数字")
+
+        result = self._local_panel(uid)
+        if result is None:
+            return error_response("这个 UID 还没有本地存档，先刷新数据", status_code=404)
+
+        panel = find_character(result, target)
+        if panel is None:
+            return error_response(f"没找到角色「{target}」", status_code=404)
+
+        nickname = result.get("nickname", "")
+        updated_at = float(result.get("updated_at") or 0)
+
+        # 本地已经渲染过、且不比数据旧的图片优先，省掉一次渲染等待
+        image = ""
+        path = card_image_path(uid, panel)
+        try:
+            if path.exists() and path.stat().st_mtime >= updated_at - 2:
+                image = "data:image/png;base64," + base64.b64encode(
+                    path.read_bytes()
+                ).decode()
+        except OSError:
+            image = ""
+
+        html = ""
+        try:
+            html_path = card_html_path(uid, panel)
+            if (
+                html_path.exists()
+                and html_path.stat().st_mtime >= updated_at - 2
+            ):
+                html = html_path.read_text(encoding="utf-8")
+            else:
+                saved = await save_card_html(panel, uid, nickname)
+                if saved and saved.exists():
+                    html = saved.read_text(encoding="utf-8")
+                else:
+                    html = await build_card_html(panel, uid, nickname)
+        except Exception as exc:
+            logger.warning(f"[星铁面板] 生成角色卡预览失败：{type(exc).__name__}: {exc}")
+
+        return json_response(
+            {
+                "ok": True,
+                "uid": uid,
+                "name": panel.get("name", ""),
+                "nickname": nickname,
+                "updated_at": result.get("updated_at", 0),
+                "image": image,
+                "html": html,
+                "text": format_character_panel(panel),
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 设置
+    # ------------------------------------------------------------------
+
+    def _setting_value(self, key: str) -> Any:
+        spec = SETTING_SPECS[key]
+        raw = self.config.get(key, spec["default"])
+        if spec["type"] == "int":
+            try:
+                return int(float(raw))
+            except (TypeError, ValueError):
+                return int(spec["default"])
+        if spec["type"] == "bool":
+            if isinstance(raw, str):
+                return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+            return bool(raw)
+        text = str(raw or spec["default"]).strip()
+        return text if text in spec.get("options", []) else spec["default"]
+
+    def _save_plugin_config(self) -> bool:
+        saver = getattr(self.config, "save_config", None)
+        if not callable(saver):
+            logger.warning(
+                "[星铁面板] 当前配置对象不支持保存，设置只在本次运行内生效"
+            )
+            return False
+        try:
+            saver()
+            return True
+        except Exception:
+            logger.exception("[星铁面板] 保存插件配置失败")
+            return False
+
+    def _restart_auto_task(self) -> None:
+        if self._auto_task and not self._auto_task.done():
+            self._auto_task.cancel()
+        self._auto_task = None
+        try:
+            minutes = int(self.config.get("auto_update_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        if minutes > 0:
+            self._auto_task = asyncio.create_task(self._auto_update_loop(minutes))
+            logger.info(f"[星铁面板] 自动更新已重启，间隔 {minutes} 分钟")
+        else:
+            logger.info("[星铁面板] 自动更新已关闭")
+
+    async def api_settings(self):
+        """GET 当前设置与可编辑规则。"""
+        return json_response(
+            {
+                "values": {key: self._setting_value(key) for key in SETTING_SPECS},
+                "specs": SETTING_SPECS,
+                "persist_supported": callable(
+                    getattr(self.config, "save_config", None)
+                ),
+            }
+        )
+
+    async def api_save_settings(self):
+        """POST 保存设置，写回插件配置并立即生效。"""
+        payload = await request.json(default={})
+        values = payload.get("values")
+        if not isinstance(values, dict):
+            values = payload
+
+        clean: Dict[str, Any] = {}
+        errors: List[str] = []
+
+        for key, spec in SETTING_SPECS.items():
+            if key not in values:
+                continue
+            raw = values[key]
+            if spec["type"] == "int":
+                try:
+                    num = int(float(str(raw).strip()))
+                except (TypeError, ValueError):
+                    errors.append(f"{spec['label']} 必须是数字")
+                    continue
+                if spec.get("min") is not None:
+                    num = max(int(spec["min"]), num)
+                if spec.get("max") is not None:
+                    num = min(int(spec["max"]), num)
+                clean[key] = num
+            elif spec["type"] == "bool":
+                if isinstance(raw, str):
+                    clean[key] = raw.strip().lower() in {"1", "true", "yes", "on"}
+                else:
+                    clean[key] = bool(raw)
+            else:
+                text = str(raw).strip()
+                if text not in spec.get("options", []):
+                    errors.append(f"{spec['label']} 取值不合法")
+                    continue
+                clean[key] = text
+
+        if errors:
+            return error_response("；".join(errors))
+
+        for key, value in clean.items():
+            self.config[key] = value
+
+        saved = self._save_plugin_config()
+        if "auto_update_minutes" in clean:
+            self._restart_auto_task()
+
+        return json_response(
+            {
+                "ok": True,
+                "saved": saved,
+                "values": {key: self._setting_value(key) for key in SETTING_SPECS},
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 自检
+    # ------------------------------------------------------------------
+
+    async def api_diagnose(self):
+        """GET 环境自检，用来判断角色卡渲染 / 刷新失败卡在哪一步。"""
+        checks: List[Dict[str, Any]] = []
+
+        def add(name: str, ok: bool, detail: str = "") -> None:
+            checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+        add(
+            "插件 Web 接口",
+            WEB_API_AVAILABLE,
+            "可用" if WEB_API_AVAILABLE else "当前 AstrBot 版本不支持 register_web_api",
+        )
+        add(
+            "数据解析库",
+            LIB_AVAILABLE,
+            "已安装" if LIB_AVAILABLE else "未安装 starrail_damage_cal",
+        )
+
+        try:
+            from .relic_score import SCORE_AVAILABLE as relic_ok
+        except ImportError:
+            try:
+                from relic_score import SCORE_AVAILABLE as relic_ok
+            except Exception:
+                relic_ok = False
+        add("遗器评分表", bool(relic_ok), "可用" if relic_ok else "当前库版本没有权重表")
+
+        render_fn = getattr(self, "html_render", None)
+        add(
+            "html_render",
+            callable(render_fn),
+            "可用" if callable(render_fn) else "当前环境没有 html_render，角色卡只能出文字",
+        )
+
+        try:
+            add(
+                "角色卡模板",
+                TEMPLATE_FILE.exists(),
+                str(TEMPLATE_FILE),
+            )
+        except Exception as exc:
+            add("角色卡模板", False, f"{type(exc).__name__}: {exc}")
+
+        add(
+            "图片下载组件",
+            card_aiohttp is not None,
+            "aiohttp 可用" if card_aiohttp else "缺少 aiohttp，卡片图片无法内嵌",
+        )
+
+        status = get_render_status()
+        cooldown = max(0.0, self._card_fail_until - time.time())
+        add(
+            "角色卡状态",
+            not self._card_disabled and cooldown <= 0,
+            (
+                "已永久关闭（没有 html_render）"
+                if self._card_disabled
+                else (
+                    f"冷却中，剩余 {cooldown / 60:.0f} 分钟"
+                    if cooldown > 0
+                    else "正常"
+                )
+            ),
+        )
+
+        try:
+            bindings = len(list_bindings(1000))
+        except Exception:
+            bindings = 0
+        try:
+            panels = list_panels()
+        except Exception:
+            panels = []
+
+        info = {
+            "library_version": _lib_version(),
+            "render_mode": self._setting_value("panel_render_mode"),
+            "data_dir": str(self._data_dir),
+            "db_path": str(self._data_dir / "starrail.db"),
+            "cache_dir": str(self._data_dir / "cache"),
+            "card_cache_dir": status["cache_dir"],
+            "card_log_file": status["log_file"],
+            "cached_cards": status["cached_cards"],
+            "last_render_error": status["last_error"],
+            "last_render_success_at": status["last_success_at"],
+            "bindings": bindings,
+            "panels": len(panels),
+            "auto_update_minutes": self._setting_value("auto_update_minutes"),
+            "auto_update_running": bool(
+                self._auto_task and not self._auto_task.done()
+            ),
+            "last_update_at": self._last_update_at,
+            "last_update_msg": self._last_update_msg,
+        }
+
+        return json_response({"checks": checks, "info": info})
+
+    # ------------------------------------------------------------------
 
     async def terminate(self):
         """插件被卸载或重载时调用。"""
-        for task in (self._auto_task, self._refresh_task):
+        for task in (self._auto_task, self._refresh_task, self._precache_task):
             if task and not task.done():
                 task.cancel()
         logger.info("[星铁面板] 插件已卸载")
