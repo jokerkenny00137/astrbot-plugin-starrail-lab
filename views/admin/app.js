@@ -477,6 +477,11 @@ function buildSettingRow(key, spec, value) {
     input = document.createElement("input");
     input.type = "checkbox";
     input.checked = Boolean(value);
+  } else if (spec.type === "text") {
+    input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "留空使用默认端点";
+    input.value = value == null ? "" : value;
   } else {
     input = document.createElement("input");
     input.type = "number";
@@ -503,7 +508,7 @@ async function saveSettings() {
     const key = input.dataset.key;
     const type = input.dataset.type;
     if (type === "bool") values[key] = input.checked;
-    else if (type === "select") values[key] = input.value;
+    else if (type === "select" || type === "text") values[key] = input.value;
     else values[key] = input.value === "" ? 0 : Number(input.value);
   }
 
@@ -537,6 +542,9 @@ const diagInfo = $("diag-info");
 const INFO_LABELS = {
   library_version: "解析库版本",
   render_mode: "输出方式",
+  endpoint_rotation: "自动切换渲染端点",
+  inline_images: "图片内嵌",
+  preferred_endpoint: "渲染端点",
   data_dir: "数据目录",
   db_path: "数据库",
   cache_dir: "原始数据缓存",
@@ -569,10 +577,14 @@ async function testRender() {
     const resp = await post("render_test", { timeout: 60 });
     const p = unwrap(resp, "ok") !== undefined ? resp : resp.data || {};
     if (p.ok) {
+      const via =
+        p.mode === "rotation"
+          ? `官方端点轮询${p.endpoint ? "（" + p.endpoint + "）" : ""}`
+          : "AstrBot html_render";
       show(
         msg,
-        `渲染端点可用，极简页面耗时 ${p.elapsed} 秒${
-          p.inline_images ? "（角色卡图片内嵌已开启）" : "（角色卡图片内嵌已关闭）"
+        `渲染可用：${via}，极简页面耗时 ${p.elapsed} 秒${
+          p.inline_images ? "（图片内嵌已开启）" : "（图片内嵌已关闭）"
         }`,
         "ok"
       );

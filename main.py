@@ -187,6 +187,18 @@ SETTING_SPECS = {
         "default": True,
         "hint": "开启后把头像/光锥/遗器图转成 base64 一起发给渲染端，图更稳但请求体大；渲染超时可尝试关闭",
     },
+    "card_endpoint_rotation": {
+        "label": "自动切换渲染端点",
+        "type": "bool",
+        "default": True,
+        "hint": "从 AstrBot 官方端点列表里逐个尝试，失败快速换下一个，避免卡在一个 503 的端点上",
+    },
+    "card_render_endpoint": {
+        "label": "自定义渲染端点",
+        "type": "text",
+        "default": "",
+        "hint": "可选，例如 https://t2i.example.com/text2img。留空则用 AstrBot 配置或官方端点列表",
+    },
 }
 
 
@@ -344,6 +356,25 @@ class StarRailPanelPlugin(Star):
         if isinstance(value, str):
             return value.strip().lower() not in {"0", "false", "no", "off", ""}
         return bool(value)
+
+    def _rotation_enabled(self) -> bool:
+        value = self.config.get("card_endpoint_rotation", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _preferred_endpoint(self) -> str:
+        """插件里填的端点 > AstrBot 配置里的 t2i_endpoint > 官方列表。"""
+        value = str(self.config.get("card_render_endpoint", "") or "").strip()
+        if value:
+            return value
+        try:
+            cfg = self.context.get_config()
+            if cfg:
+                return str(cfg.get("t2i_endpoint") or "").strip()
+        except Exception:
+            pass
+        return ""
 
     def _card_cooldown(self) -> float:
         """失败后的冷却时间（分钟），限制在 0~120 之间。"""
@@ -509,6 +540,8 @@ class StarRailPanelPlugin(Star):
                     timeout=self._card_timeout(),
                     fresh_after=float(result.get("updated_at") or 0),
                     inline_images=self._inline_images_enabled(),
+                    use_rotation=self._rotation_enabled(),
+                    preferred_endpoint=self._preferred_endpoint(),
                 )
             finally:
                 self._chat_rendering -= 1
@@ -668,6 +701,8 @@ class StarRailPanelPlugin(Star):
                 save_html=True,
                 inline_images=self._inline_images_enabled(),
                 retry_on_timeout=False,
+                use_rotation=self._rotation_enabled(),
+                preferred_endpoint=self._preferred_endpoint(),
             )
             if image:
                 ok += 1
@@ -1127,6 +1162,8 @@ class StarRailPanelPlugin(Star):
             if isinstance(raw, str):
                 return raw.strip().lower() not in {"0", "false", "no", "off", ""}
             return bool(raw)
+        if spec["type"] == "text":
+            return str(raw or "").strip()
         text = str(raw or spec["default"]).strip()
         return text if text in spec.get("options", []) else spec["default"]
 
@@ -1200,6 +1237,12 @@ class StarRailPanelPlugin(Star):
                     clean[key] = raw.strip().lower() in {"1", "true", "yes", "on"}
                 else:
                     clean[key] = bool(raw)
+            elif spec["type"] == "text":
+                text = str(raw or "").strip()
+                if text and not text.startswith(("http://", "https://")):
+                    errors.append(f"{spec['label']} 必须以 http:// 或 https:// 开头")
+                    continue
+                clean[key] = text
             else:
                 text = str(raw).strip()
                 if text not in spec.get("options", []):
@@ -1306,6 +1349,9 @@ class StarRailPanelPlugin(Star):
         info = {
             "library_version": _lib_version(),
             "render_mode": self._setting_value("panel_render_mode"),
+            "endpoint_rotation": self._rotation_enabled(),
+            "inline_images": self._inline_images_enabled(),
+            "preferred_endpoint": self._preferred_endpoint() or "官方端点列表",
             "data_dir": str(self._data_dir),
             "db_path": str(self._data_dir / "starrail.db"),
             "cache_dir": str(self._data_dir / "cache"),
@@ -1335,9 +1381,16 @@ class StarRailPanelPlugin(Star):
             timeout = 30.0
         timeout = max(5.0, min(120.0, timeout))
 
-        result = await probe_render(self, timeout=timeout)
+        result = await probe_render(
+            self,
+            timeout=timeout,
+            use_rotation=self._rotation_enabled(),
+            preferred_endpoint=self._preferred_endpoint(),
+        )
         result["timeout"] = timeout
         result["inline_images"] = self._inline_images_enabled()
+        result["rotation"] = self._rotation_enabled()
+        result["endpoint"] = result.get("endpoint") or self._preferred_endpoint()
         return json_response(result)
 
     # ------------------------------------------------------------------

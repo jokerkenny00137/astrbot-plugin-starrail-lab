@@ -45,5 +45,17 @@
     "type": "bool",
     "default": true,
     "hint": "把头像/光锥/遗器图转成 base64 一起发给渲染端，图片更稳但请求体较大。若经常渲染超时，可以关闭试试。"
+  },
+  "card_endpoint_rotation": {
+    "description": "自动切换渲染端点",
+    "type": "bool",
+    "default": true,
+    "hint": "从 AstrBot 官方渲染端点列表里逐个尝试，失败快速换下一个，避免卡在一个 503 的端点上。"
+  },
+  "card_render_endpoint": {
+    "description": "自定义渲染端点",
+    "type": "string",
+    "default": "",
+    "hint": "可选，例如 https://t2i.example.com/text2img。留空则使用 AstrBot 配置或官方端点列表。"
   }
 }

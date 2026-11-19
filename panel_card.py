@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import random
 import shutil
 import time
 
@@ -44,6 +45,19 @@ TEMPLATE_FILE = CARD_DIR / "character.html"
 
 # 单件遗器的满分数。六件全满是 60 分。
 RELIC_MAX_SCORE = 10.0
+
+# 远端渲染端点：AstrBot 官方端点列表。自带的 html_render 遇到卡住的端点
+# 会一直等默认的 300 秒，这里自己做短超时轮询，失败快速切换。
+T2I_LIST_URL = "https://api.soulter.top/astrbot/t2i-endpoints"
+# 官方文档公开的两个端点。列表接口有时只返回其中一个（而且可能是 503 的那个），
+# 所以这里内置兜底，轮询时逐个试。
+T2I_DEFAULT_ENDPOINTS = [
+    "https://t2i.rcfortress.site/text2img",
+    "https://t2i.soulter.top/text2img",
+]
+T2I_DEFAULT_ENDPOINT = T2I_DEFAULT_ENDPOINTS[0]
+_ENDPOINT_TTL = 600.0
+_ENDPOINT_CACHE: Tuple[float, List[str]] = (0.0, [])
 
 # 公共素材库（jsDelivr 镜像，国内比 raw.githubusercontent.com 稳定）
 ASSET_BASE = "https://cdn.jsdelivr.net/gh/Mar-7th/StarRailRes@master/icon"
@@ -475,6 +489,124 @@ def _cache_usable(path: Path, fresh_after: float, max_age: float) -> bool:
     return now - mtime < max_age
 
 
+# --------------------------------------------------------------------------
+# 远端渲染端点（自带轮询，短超时快速切换）
+# --------------------------------------------------------------------------
+
+
+def _clean_endpoint(url: str) -> str:
+    url = str(url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if not url.endswith("text2img"):
+        url += "/text2img"
+    return url
+
+
+async def _list_endpoints() -> List[str]:
+    """取 AstrBot 官方渲染端点列表，失败时退回默认端点。"""
+    global _ENDPOINT_CACHE
+
+    now = time.time()
+    cached_at, cached = _ENDPOINT_CACHE
+    if cached and now - cached_at < _ENDPOINT_TTL:
+        return list(cached)
+
+    urls: List[str] = []
+    if aiohttp is not None:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    T2I_LIST_URL, timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status == 200:
+                        payload = await resp.json(content_type=None)
+                        for item in payload.get("data") or []:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("active") and item.get("url"):
+                                urls.append(_clean_endpoint(item["url"]))
+        except Exception as exc:
+            _log(f"获取渲染端点列表失败：{type(exc).__name__}: {exc}")
+
+    seen = set()
+    result = []
+    for url in urls + T2I_DEFAULT_ENDPOINTS:
+        if url and url not in seen:
+            seen.add(url)
+            result.append(url)
+
+    _ENDPOINT_CACHE = (now, result)
+    return list(result)
+
+
+async def _render_remote(
+    html: str,
+    timeout: float,
+    endpoint: str = "",
+) -> Optional[str]:
+    """把完整 HTML 直接发给渲染端点，返回图片 URL。
+
+    自己控制每个端点的超时，避免 AstrBot 内置策略在卡住的端点等 300 秒。
+    """
+    if aiohttp is None:
+        return None
+
+    if endpoint:
+        # 自定义端点优先；它挂了再试官方端点，避免配置过期后完全出不了图
+        endpoints = [_clean_endpoint(endpoint)]
+        try:
+            endpoints += await _list_endpoints()
+        except Exception:
+            pass
+    else:
+        endpoints = await _list_endpoints()
+        random.shuffle(endpoints)
+
+    unique: List[str] = []
+    seen = set()
+    for ep in endpoints:
+        if ep and ep not in seen:
+            seen.add(ep)
+            unique.append(ep)
+    endpoints = unique
+    if not endpoints:
+        return None
+
+    deadline = time.time() + timeout
+    payload = {
+        "tmpl": html,
+        "json": True,
+        "tmpldata": {},
+        "options": {"full_page": True},
+    }
+
+    async with aiohttp.ClientSession() as session:
+        for ep in endpoints:
+            remain = deadline - time.time()
+            if remain < 3:
+                break
+            attempt_timeout = min(20.0, remain)
+            try:
+                async with session.post(
+                    f"{ep}/generate",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=attempt_timeout),
+                ) as resp:
+                    if resp.status != 200:
+                        _log(f"渲染端点 {ep} 返回 HTTP {resp.status}")
+                        continue
+                    data = await resp.json(content_type=None)
+                image_id = (data.get("data") or {}).get("id")
+                if image_id:
+                    return f"{ep}/{image_id}"
+                _log(f"渲染端点 {ep} 返回里没有图片 id")
+            except Exception as exc:
+                _log(f"渲染端点 {ep} 失败：{type(exc).__name__}: {exc}")
+
+    return None
+
+
 # 同一张角色卡正在渲染时复用同一个任务。
 # 典型场景：后台预渲染还没跑完，用户已经在聊天里查同一个角色。
 _RENDER_TASKS: Dict[str, "asyncio.Task[Optional[str]]"] = {}
@@ -491,6 +623,8 @@ async def _render_and_cache(
     cache_path: Path,
     inline_images: bool = True,
     retry_on_timeout: bool = True,
+    use_rotation: bool = True,
+    preferred_endpoint: str = "",
 ) -> Optional[str]:
     """实际渲染路径。同一张卡只会有一个任务在跑。"""
     global LAST_ERROR, LAST_SUCCESS_AT
@@ -501,6 +635,47 @@ async def _render_and_cache(
             _log(f"渲染失败，退回上一次的缓存图（{panel.get('name')}）")
             return str(cache_path)
         return None
+
+    # 先走自带端点轮询：每个端点短超时，失败立刻换下一个
+    if use_rotation and aiohttp is not None:
+        rotation_started = time.time()
+        html = ""
+        try:
+            html = await build_card_html(
+                panel, uid, nickname, inline_images=inline_images
+            )
+        except Exception as exc:
+            _log(f"端点轮询准备失败：{type(exc).__name__}: {exc}")
+
+        if html:
+            html_images = html.count("data:image/")
+            logger.info(
+                f"[星铁面板] 端点轮询渲染：{panel.get('name')}，"
+                f"HTML {len(html)} 字符，内联 {html_images} 张，"
+                f"端点 {'自定义' if preferred_endpoint else '官方列表'}，"
+                f"总预算 {timeout:.0f}s"
+            )
+            url = await _render_remote(html, timeout, preferred_endpoint)
+            if url:
+                if await _store_image(url, cache_path):
+                    LAST_ERROR = ""
+                    LAST_SUCCESS_AT = time.time()
+                    _log(
+                        f"端点轮询渲染成功（{panel.get('name')}）："
+                        f"耗时 {LAST_SUCCESS_AT - rotation_started:.1f}s，{url}"
+                    )
+                    if save_html:
+                        await save_card_html(panel, uid, nickname)
+                    return str(cache_path)
+                return url
+
+            # 端点全挂时不再回退 html_render：用的是同一批端点，只会多等一轮
+            LAST_ERROR = "所有渲染端点均不可用（503/超时）"
+            _log("端点轮询全部失败，不再回退 html_render")
+            logger.warning(
+                "[星铁面板] 所有渲染端点均不可用（503/超时），本次改用文字/旧图"
+            )
+            return stale_cache()
 
     render = getattr(star, "html_render", None)
     if not callable(render):
@@ -611,6 +786,8 @@ async def render_character_card(
     use_cache: bool = True,
     inline_images: bool = True,
     retry_on_timeout: bool = True,
+    use_rotation: bool = True,
+    preferred_endpoint: str = "",
 ) -> Optional[str]:
     """渲染角色卡，返回图片 URL 或本地路径；失败返回 None。
 
@@ -649,6 +826,8 @@ async def render_character_card(
             cache_path,
             inline_images,
             retry_on_timeout,
+            use_rotation,
+            preferred_endpoint,
         )
     )
     _RENDER_TASKS[key] = task
@@ -668,35 +847,61 @@ async def render_character_card(
         return str(cache_path) if use_cache and cache_path.exists() else None
 
 
-async def probe_render(star: Any, timeout: float = 30.0) -> Dict[str, Any]:
-    """用一张极简 HTML 测试 AstrBot 的渲染端点，返回耗时与结果。
+async def probe_render(
+    star: Any,
+    timeout: float = 30.0,
+    use_rotation: bool = True,
+    preferred_endpoint: str = "",
+) -> Dict[str, Any]:
+    """用一张极简 HTML 测试渲染链路，返回耗时与结果。
 
-    角色卡超时到底是「端点本身慢」还是「卡片太大」，看这个就知道。
+    先测插件自带的端点轮询，再测 AstrBot 的 html_render，
+    这样能区分「端点本身不可用」和「卡片太大」。
     """
-    render = getattr(star, "html_render", None)
-    if not callable(render):
-        return {"ok": False, "elapsed": 0.0, "error": "当前环境没有 html_render"}
-
     template = (
         "<html><body style='font-family:sans-serif;padding:20px'>"
         "AstrBot T2I OK</body></html>"
     )
+
+    if use_rotation and aiohttp is not None:
+        started = time.time()
+        url = await _render_remote(template, timeout, preferred_endpoint)
+        elapsed = round(time.time() - started, 2)
+        if url:
+            endpoint = url.rsplit("/", 1)[0]
+            return {"ok": True, "elapsed": elapsed, "mode": "rotation", "endpoint": endpoint}
+
+    render = getattr(star, "html_render", None)
+    if not callable(render):
+        return {
+            "ok": False,
+            "elapsed": 0.0,
+            "mode": "rotation" if use_rotation else "astrbot",
+            "error": "内置端点不可用，且当前环境没有 html_render",
+        }
+
     started = time.time()
     try:
         await asyncio.wait_for(
             render(template, {}, return_url=True, options={"full_page": True}),
             timeout=timeout,
         )
-        return {"ok": True, "elapsed": round(time.time() - started, 2)}
+        return {
+            "ok": True,
+            "elapsed": round(time.time() - started, 2),
+            "mode": "astrbot",
+        }
     except asyncio.TimeoutError:
         return {
             "ok": False,
             "elapsed": round(time.time() - started, 2),
+            "mode": "astrbot",
             "error": f"渲染端点超时（{timeout:.0f}s）",
         }
     except Exception as exc:
         return {
             "ok": False,
             "elapsed": round(time.time() - started, 2),
+            "mode": "astrbot",
             "error": f"{type(exc).__name__}: {exc}",
         }
