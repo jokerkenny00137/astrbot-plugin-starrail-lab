@@ -1,20 +1,32 @@
 """把单个角色的面板渲染成一张图片角色卡。
 
 渲染依赖 AstrBot 内置的 `Star.html_render()`（HTML + Jinja2 → 图片），
-不打包任何游戏素材，头像 / 光锥 / 属性图标全部走公共 CDN。
+不打包任何游戏素材，头像 / 光锥 / 遗器图标全部走公共 CDN。
 
-任何一步失败都返回 None，由调用方回退到原来的文本输出。
+稳定性设计：
+    1. 图片由插件自己下载并转成 base64 内嵌进 HTML。渲染端的浏览器不用再
+       去外网拉图，既不会因为 CDN 慢而截出一张空图，也不受渲染节点网络限制。
+    2. 图片带内存缓存，同一张图在 TTL 内只下一次。
+    3. 渲染失败（非超时）会重试一次；超时不重试，避免总耗时翻倍。
+    4. 任何一步失败都返回 None，由调用方回退到原来的文本输出。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import time
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
+
+try:
+    import aiohttp
+except Exception:  # 极简环境下没有 aiohttp 时跳过内联，退化为远程链接
+    aiohttp = None  # type: ignore[assignment]
 
 try:  # AstrBot 以包的形式加载插件
     from .relic_score import get_relic_profile, key_stat_names, score_relic
@@ -43,6 +55,12 @@ ELEMENT_COLOR = {
     "Imaginary": ("#ffd76e", "rgba(255,215,110,.30)"),
 }
 DEFAULT_COLOR = ("#9db2ff", "rgba(157,178,255,.28)")
+
+# 图片内联缓存：url -> (写入时间, data URI)
+_IMAGE_CACHE: Dict[str, Tuple[float, str]] = {}
+_IMAGE_TTL = 3600.0  # 缓存 1 小时
+_IMAGE_TIMEOUT = 6.0  # 单张图下载超时
+_IMAGE_MAX_BYTES = 2_000_000  # 超过 2MB 的图不内联（正常素材都在 40KB 内）
 
 
 # --------------------------------------------------------------------------
@@ -220,6 +238,91 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
 
 
 # --------------------------------------------------------------------------
+# 图片内联
+# --------------------------------------------------------------------------
+
+
+async def _download_as_data_uri(session: Any, url: str) -> Optional[str]:
+    """下载图片并转成 data URI。失败返回 None。"""
+    if not url:
+        return None
+    if url.startswith("data:"):
+        return url
+
+    now = time.time()
+    cached = _IMAGE_CACHE.get(url)
+    if cached and now - cached[0] < _IMAGE_TTL:
+        return cached[1]
+
+    try:
+        async with session.get(
+            url, timeout=aiohttp.ClientTimeout(total=_IMAGE_TIMEOUT)
+        ) as resp:
+            if resp.status != 200:
+                return None
+            raw = await resp.read()
+    except Exception:
+        return None
+
+    if not raw or len(raw) > _IMAGE_MAX_BYTES:
+        return None
+
+    uri = "data:image/png;base64," + base64.b64encode(raw).decode()
+    _IMAGE_CACHE[url] = (now, uri)
+    return uri
+
+
+async def _load_image(session: Any, url: str, alt_url: str = "") -> Optional[str]:
+    uri = await _download_as_data_uri(session, url)
+    if uri is None and alt_url:
+        uri = await _download_as_data_uri(session, alt_url)
+    return uri
+
+
+async def inline_card_images(data: Dict[str, Any]) -> int:
+    """把卡片里的远程图片换成本地 base64，返回成功内联的张数。
+
+    渲染端（远端浏览器）不需要再访问 CDN，图片缺失和空图问题会少很多。
+    """
+    if aiohttp is None:
+        return 0
+
+    jobs: List[Tuple[Dict[str, Any], str, str, str]] = []
+    if data.get("avatar_url"):
+        jobs.append((data, "avatar_url", data["avatar_url"], ""))
+
+    weapon = data.get("weapon") or {}
+    if weapon.get("icon"):
+        jobs.append((weapon, "icon", weapon["icon"], weapon.get("icon_alt", "")))
+
+    for relic in data.get("relics", []):
+        if relic.get("icon"):
+            jobs.append((relic, "icon", relic["icon"], relic.get("icon_alt", "")))
+
+    if not jobs:
+        return 0
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            results = await asyncio.gather(
+                *[_load_image(session, url, alt) for _, _, url, alt in jobs],
+                return_exceptions=True,
+            )
+    except Exception:
+        logger.exception("[星铁面板] 下载角色卡图片失败")
+        return 0
+
+    inlined = 0
+    for (container, key, _, _), uri in zip(jobs, results):
+        if isinstance(uri, str) and uri.startswith("data:"):
+            container[key] = uri
+            # 已经内嵌了，不需要模板里的远程兜底
+            container[key + "_alt"] = ""
+            inlined += 1
+    return inlined
+
+
+# --------------------------------------------------------------------------
 # 渲染
 # --------------------------------------------------------------------------
 
@@ -251,14 +354,35 @@ async def render_character_card(
         logger.exception("[星铁面板] 角色卡模板/数据准备失败")
         return None
 
-    try:
-        return await asyncio.wait_for(
-            render(template, data, return_url=True, options={"full_page": True}),
-            timeout=timeout,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"[星铁面板] 角色卡渲染超时（{timeout:.0f}s），改用文本输出")
-        return None
-    except Exception as exc:
-        logger.warning(f"[星铁面板] 角色卡渲染失败：{type(exc).__name__}: {exc}")
-        return None
+    # 图片先内嵌，避免渲染端拉不到图或截到空图
+    inlined = await inline_card_images(data)
+    if inlined == 0:
+        logger.warning("[星铁面板] 角色卡图片一张都没内联成功，渲染结果可能缺图")
+
+    started = time.time()
+    last_error: Optional[str] = None
+
+    for attempt in (1, 2):
+        try:
+            result = await asyncio.wait_for(
+                render(template, data, return_url=True, options={"full_page": True}),
+                timeout=timeout,
+            )
+            logger.debug(
+                f"[星铁面板] 角色卡渲染成功：耗时 {time.time() - started:.1f}s，"
+                f"内联图片 {inlined} 张"
+            )
+            return result
+        except asyncio.TimeoutError:
+            # 超时说明渲染端点已经卡住，重试只会让用户多等一轮
+            logger.warning(f"[星铁面板] 角色卡渲染超时（{timeout:.0f}s）")
+            return None
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt == 1:
+                logger.warning(f"[星铁面板] 角色卡渲染失败，1 秒后重试：{last_error}")
+                await asyncio.sleep(1)
+                continue
+            logger.warning(f"[星铁面板] 角色卡渲染失败：{last_error}")
+
+    return None

@@ -16,6 +16,12 @@
     "default": 15,
     "hint": "超过这个时间还没渲染完就回退成文字输出，避免卡住对话。范围 5~60，默认 15。"
   },
+  "card_fail_cooldown_minutes": {
+    "description": "角色卡失败后冷却（分钟）",
+    "type": "int",
+    "default": 5,
+    "hint": "渲染失败后，在这段时间内直接走文字输出，不再尝试出图，避免每次都卡到超时。冷却结束会自动恢复。填 0 表示每次都尝试。"
+  },
   "auto_update_minutes": {
     "description": "自动更新间隔（分钟）",
     "type": "int",

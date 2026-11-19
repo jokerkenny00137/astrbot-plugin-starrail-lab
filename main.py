@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from pathlib import Path
 
@@ -122,8 +123,10 @@ class StarRailPanelPlugin(Star):
         self._data_dir = self._resolve_data_dir()
         self._auto_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
-        # 角色卡渲染一旦失败就本进程内不再尝试，避免每次都卡到超时
-        self._card_broken = False
+        # 渲染失败后进入冷却期，冷却结束会重新尝试出图
+        self._card_fail_until = 0.0
+        # 当前环境根本没有 html_render 时永久关闭
+        self._card_disabled = False
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
@@ -183,9 +186,12 @@ class StarRailPanelPlugin(Star):
         mode = str(self.config.get("panel_render_mode", "auto") or "auto").lower()
         if mode == "text":
             return False
-        if self._card_broken:
+        if self._card_disabled:
+            return False
+        if time.time() < self._card_fail_until:
             return False
         if not callable(getattr(self, "html_render", None)):
+            self._card_disabled = True
             if mode == "image":
                 logger.warning(
                     "[星铁面板] 当前 AstrBot 不支持 html_render，角色卡不可用，已回退文本"
@@ -200,6 +206,14 @@ class StarRailPanelPlugin(Star):
         except (TypeError, ValueError):
             return 15.0
         return max(5.0, min(60.0, value))
+
+    def _card_cooldown(self) -> float:
+        """失败后的冷却时间（分钟），限制在 0~120 之间。"""
+        try:
+            value = float(self.config.get("card_fail_cooldown_minutes", 5) or 0)
+        except (TypeError, ValueError):
+            return 5.0
+        return max(0.0, min(120.0, value))
 
     # ------------------------------------------------------------------
     # 面板查询
@@ -311,7 +325,13 @@ class StarRailPanelPlugin(Star):
             if image:
                 yield event.image_result(image)
                 return
-            self._card_broken = True
+
+            minutes = self._card_cooldown()
+            if minutes > 0:
+                self._card_fail_until = time.time() + minutes * 60
+                logger.warning(
+                    f"[星铁面板] 角色卡渲染失败，{minutes:.0f} 分钟内改用文本输出"
+                )
 
         for chunk in _split_text(format_character_panel(panel)):
             yield event.plain_result(chunk)
