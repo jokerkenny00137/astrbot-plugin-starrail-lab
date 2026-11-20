@@ -566,7 +566,7 @@ def format_character_list(result: Dict[str, Any]) -> str:
     lines.append(f"  /选择查询 角色名      （不用打 UID，如 /选择查询 {sample}）")
     lines.append("  /选择查询 序号        （如 /选择查询 1）")
     lines.append("  /选择查询 全部        （一次看完整份）")
-    lines.append(f"  /面板 {uid} 刷新      （重新拉取最新数据）")
+    lines.append(f"  /刷新 {uid}          （后台重新拉取最新数据）")
     lines.append(f"  未绑定也可以用：/面板 {uid} 角色名")
     return "\n".join(lines)
 

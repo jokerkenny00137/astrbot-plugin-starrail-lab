@@ -6,7 +6,7 @@
     /面板 <UID> 角色名       查看某个角色的完整面板
     /面板 <UID> 序号         同上，用清单里的编号
     /面板 <UID> 全部         一次看全部角色
-    /面板 <UID> 刷新         忽略缓存重新拉取
+    /面板 <UID> 刷新         兼容写法，推荐直接用 /刷新 <UID>
 
     /绑定 <UID>              把自己的 QQ 与游戏 UID 绑定
     /解绑                    解除绑定
@@ -549,9 +549,10 @@ class StarRailPanelPlugin(Star):
             # 刚拉下来的新数据：入库 + 后台预渲染角色卡
             result["updated_at"] = time.time()
 
-        # 本地存档也要写一份「最近查询」，否则本地优先之后 AI 拿不到上下文
+        # 本地存档也要写一份「最近查询」，否则本地优先之后 AI 拿不到上下文。
+        # 必须按「会话 + 发送者」记：群里 A 查的面板不能被注入到 B 的提问里。
         self._remember(
-            self._session_key(event), uid, result, save_archive=fetched
+            self._user_key(event), uid, result, save_archive=fetched
         )
         if fetched:
             self._schedule_precache(uid, result)
@@ -638,7 +639,7 @@ class StarRailPanelPlugin(Star):
         if result.get("updated_at"):
             text += (
                 f"\n  数据更新于 {_fmt_ts(result['updated_at'])}"
-                f"（/面板 {uid} 刷新 可更新）"
+                f"（/刷新 {uid} 可后台更新）"
             )
         for chunk in _split_text(text):
             yield event.plain_result(chunk)
@@ -955,9 +956,24 @@ class StarRailPanelPlugin(Star):
             ttl = int(self.config.get("llm_context_ttl_minutes", 0) or 0) * 60
             if ttl <= 0:
                 ttl = DEFAULT_CONTEXT_TTL
-            record = get_last_query(self._session_key(event), max_age=ttl)
+            # 按「会话 + 发送者」取：同群其他人的查询不会串到这里
+            record = get_last_query(self._user_key(event), max_age=ttl)
             if not record or not record.get("summary"):
                 return
+
+            summary = record["summary"]
+            # 刷新过但还没重新查询时，用最新的本地存档重建摘要，
+            # 免得 AI 拿刷新前那份旧面板（旧遗器 / 旧光锥）回答
+            try:
+                fresh = get_panel(str(record.get("uid") or ""))
+                if fresh and float(fresh.get("updated_at") or 0) > float(
+                    record.get("updated_at") or 0
+                ):
+                    rebuilt = build_llm_summary(fresh)
+                    if rebuilt:
+                        summary = rebuilt
+            except Exception:
+                logger.debug("[星铁面板] 用最新存档重建摘要失败，沿用上次摘要")
 
             block = (
                 "【用户刚刚查询的游戏面板数据】\n"
@@ -965,7 +981,10 @@ class StarRailPanelPlugin(Star):
                 "数据来自游戏内公开的角色展示柜，是真实的。\n"
                 "回答与配装、面板、遗器、光锥相关的问题时，请优先以此数据为依据，"
                 "不要凭记忆编造数值，也不要建议用户重新发一遍数据。\n"
-                f"{record['summary']}"
+                "这份数据只属于摘要里那个 UID 对应的玩家，不代表同群/同会话的其他成员，"
+                "不要把它当成别人的角色；摘要里也没有队伍（配队）信息，"
+                "被问到配队时只能基于这些角色给建议，不要编造队伍成员或站位。\n"
+                f"{summary}"
             )
 
             guide = str(

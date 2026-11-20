@@ -6,6 +6,15 @@ const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
 
 const $ = (id) => document.getElementById(id);
 
+const searchInput = $("table-search");
+const bridgeChip = $("bridge-chip");
+const navCount = { bindings: $("nav-bindings"), players: $("nav-players") };
+const hudStat = {
+  bindings: $("hud-bindings"),
+  panels: $("hud-panels"),
+  update: $("hud-update"),
+};
+
 function show(el, text, kind) {
   el.textContent = text || "";
   el.className = "msg" + (kind ? " " + kind : "");
@@ -58,6 +67,13 @@ function unwrap(resp, key) {
 
 /* ============================ 标签页 ============================ */
 
+const TAB_SUBTITLE = {
+  bindings: "管理 QQ 与游戏 UID 的绑定关系",
+  players: "浏览本地存档，预览角色卡与文字面板",
+  settings: "调整渲染、自动更新与 AI 上下文相关选项",
+  diagnose: "检查解析库、渲染端点与运行环境",
+};
+
 function switchTab(name) {
   for (const btn of document.querySelectorAll(".tab")) {
     btn.classList.toggle("active", btn.dataset.tab === name);
@@ -65,6 +81,8 @@ function switchTab(name) {
   for (const panel of document.querySelectorAll(".tab-panel")) {
     panel.classList.toggle("active", panel.id === `tab-${name}`);
   }
+  if (TAB_SUBTITLE[name]) $("page-sub").textContent = TAB_SUBTITLE[name];
+  applyFilter();
   if (name === "players") loadPanels();
   if (name === "settings") loadSettings();
   if (name === "diagnose" && !$("checks").dataset.loaded) runDiagnose();
@@ -74,12 +92,67 @@ for (const btn of document.querySelectorAll(".tab")) {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 }
 
+/* ============================ 搜索过滤 ============================ */
+
+function filterTable(bodyId) {
+  const body = $(bodyId);
+  if (!body) return;
+
+  const query = searchInput.value.trim().toLowerCase();
+  for (const row of [...body.querySelectorAll("tr")]) {
+    if (row.dataset.filterEmpty === "1") row.remove();
+  }
+
+  const rows = [...body.querySelectorAll("tr")];
+  let dataRows = 0;
+  let shown = 0;
+  for (const row of rows) {
+    if (row.querySelector(".empty")) continue; // 保留「还没有记录」这类空状态行
+    dataRows += 1;
+    const hit = !query || row.textContent.toLowerCase().includes(query);
+    row.hidden = !hit;
+    if (hit) shown += 1;
+  }
+
+  if (query && dataRows > 0 && shown === 0) {
+    const tr = document.createElement("tr");
+    tr.dataset.filterEmpty = "1";
+    const td = el("td", "empty", "没有匹配的记录");
+    td.colSpan = 5;
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+}
+
+function applyFilter() {
+  filterTable("tbody");
+  filterTable("panels-tbody");
+}
+
+if (searchInput) {
+  searchInput.addEventListener("input", applyFilter);
+}
+
 /* ============================ 绑定管理 ============================ */
 
 const tbody = $("tbody");
 const totalBadge = $("total");
 const addMsg = $("add-msg");
 const tableMsg = $("table-msg");
+
+function setBindingCount(n) {
+  const text = String(n);
+  totalBadge.textContent = text;
+  if (navCount.bindings) navCount.bindings.textContent = text;
+  if (hudStat.bindings) hudStat.bindings.textContent = text;
+}
+
+function setPanelCount(n) {
+  const text = String(n);
+  $("panel-total").textContent = text;
+  if (navCount.players) navCount.players.textContent = text;
+  if (hudStat.panels) hudStat.panels.textContent = text;
+}
 
 function renderRows(list) {
   tbody.innerHTML = "";
@@ -92,7 +165,7 @@ function renderRows(list) {
     td.textContent = "还没有绑定记录，在上面添加一条吧";
     tr.appendChild(td);
     tbody.appendChild(tr);
-    totalBadge.textContent = "0";
+    setBindingCount(0);
     return;
   }
 
@@ -123,7 +196,7 @@ function renderRows(list) {
     tbody.appendChild(tr);
   }
 
-  totalBadge.textContent = String(list.length);
+  setBindingCount(list.length);
 }
 
 async function loadList() {
@@ -131,6 +204,7 @@ async function loadList() {
   try {
     const resp = await get("bindings");
     renderRows(unwrap(resp, "bindings") || []);
+    applyFilter();
     show(tableMsg, "");
   } catch (err) {
     show(tableMsg, "加载失败：" + err.message, "err");
@@ -234,6 +308,8 @@ async function loadPanels() {
     if (at) bits.push(`最近一次更新：${fmtTime(at)}`);
     if (note) bits.push(note);
     $("last-update").textContent = bits.join(" · ");
+    if (hudStat.update) hudStat.update.textContent = at ? fmtTime(at) : "—";
+    applyFilter();
     show(panelsMsg, list.length ? "" : "还没有任何本地存档，先在绑定页刷新一次");
   } catch (err) {
     show(panelsMsg, "加载失败：" + err.message, "err");
@@ -242,7 +318,7 @@ async function loadPanels() {
 
 function renderPanels(list) {
   panelsTbody.innerHTML = "";
-  $("panel-total").textContent = String(list.length);
+  setPanelCount(list.length);
 
   if (!list.length) {
     const tr = document.createElement("tr");
@@ -523,16 +599,15 @@ async function saveSettings() {
   try {
     const resp = await post("settings/save", { values });
     const payload = unwrap(resp, "ok") !== undefined ? resp : resp.data || {};
+    let message = "已保存并生效";
+    let kind = "ok";
     if (payload.saved === false) {
-      show(
-        settingsMsg,
-        "设置已生效，但当前 AstrBot 无法写入配置文件，重启后会恢复原值",
-        "warn"
-      );
-    } else {
-      show(settingsMsg, "已保存并生效", "ok");
+      message = "设置已生效，但当前 AstrBot 无法写入配置文件，重启后会恢复原值";
+      kind = "warn";
     }
     await loadSettings();
+    // loadSettings 会清空提示，所以保存结果要在它之后再写一次
+    show(settingsMsg, message, kind);
   } catch (err) {
     show(settingsMsg, "保存失败：" + err.message, "err");
   } finally {
@@ -735,8 +810,14 @@ if (bridge && typeof bridge.ready === "function") {
   }
 }
 
+if (bridgeChip) {
+  bridgeChip.classList.add(bridge ? "on" : "off");
+  const text = $("bridge-text");
+  if (text) text.textContent = bridge ? "插件桥接已连接" : "未检测到插件桥接";
+}
+
 if (!bridge) {
   show(tableMsg, "未检测到 AstrBot 插件桥接，请从插件详情页打开本视图", "err");
 } else {
-  await loadList();
+  await Promise.all([loadList(), loadPanels()]);
 }
