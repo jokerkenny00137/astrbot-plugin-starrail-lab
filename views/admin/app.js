@@ -410,8 +410,10 @@ function setZoom(next) {
 }
 
 function openLightbox() {
-  const src = $("preview-img").src;
-  if (!src) return;
+  const preview = $("preview-img");
+  // img.src 在没设过时返回的是页面地址，必须用 naturalWidth 判断是否真的加载了图
+  if (!preview || !preview.naturalWidth) return;
+  const src = preview.currentSrc || preview.src;
   lightboxImg.onload = () => {
     fitLightbox();
     lightboxStage.scrollTop = 0;
@@ -648,7 +650,8 @@ async function loadCard(name) {
   if (!detail.uid) return;
   detail.name = name;
   $("preview-tip").hidden = false;
-  $("preview-tip").textContent = "生成角色卡中…（首次可能要几秒）";
+  $("preview-tip").classList.remove("tip-overlay");
+  $("preview-tip").textContent = "生成角色卡中…（首次可能要几十秒）";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
   $("btn-expand-card").hidden = true;
@@ -669,6 +672,7 @@ async function loadCard(name) {
 function renderCard(payload) {
   detail.card = payload;
   textPane.textContent = payload.text || "没有文字面板";
+  $("preview-tip").classList.remove("tip-overlay");
 
   if (payload.image) {
     showCardImage(payload.image);
@@ -691,12 +695,16 @@ function showCardImage(src) {
 }
 
 function showCardHtml(html) {
-  $("preview-tip").hidden = true;
   $("preview-img-wrap").hidden = true;
   $("btn-expand-card").hidden = true;
   const frame = $("preview-frame");
   frame.srcdoc = html;
   frame.hidden = false;
+  // HTML 只是图片渲染失败后的兜底：说明原因，免得以为角色卡坏了
+  const tip = $("preview-tip");
+  tip.hidden = false;
+  tip.classList.add("tip-overlay");
+  tip.textContent = "图片渲染失败，暂时只能显示 HTML 预览（可到「自检」页测试渲染）";
 }
 
 

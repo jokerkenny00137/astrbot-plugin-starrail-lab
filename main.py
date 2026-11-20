@@ -1344,7 +1344,7 @@ class StarRailPanelPlugin(Star):
         return json_response(result)
 
     async def api_card(self):
-        """POST {uid, name} 返回角色卡预览（HTML + 本地图片）。"""
+        """POST {uid, name} 返回角色卡图片，渲染不出来才回退 HTML。"""
         payload = await request.json(default={})
         uid = str(payload.get("uid", "")).strip()
         target = str(payload.get("name", "")).strip()
@@ -1362,41 +1362,79 @@ class StarRailPanelPlugin(Star):
         nickname = result.get("nickname", "")
         updated_at = float(result.get("updated_at") or 0)
 
-        # 本地已经渲染过、且不比数据旧的图片优先，省掉一次渲染等待
         image = ""
         path = card_image_path(uid, panel)
         try:
             template_mtime = TEMPLATE_FILE.stat().st_mtime
         except OSError:
             template_mtime = 0.0
-        try:
-            if (
-                path.exists()
-                and path.stat().st_mtime >= max(updated_at, template_mtime) - 2
-            ):
-                image = "data:image/png;base64," + base64.b64encode(
+
+        def _image_fresh() -> bool:
+            try:
+                return path.exists() and path.stat().st_mtime >= max(
+                    updated_at, template_mtime
+                ) - 2
+            except OSError:
+                return False
+
+        def _read_image() -> str:
+            try:
+                return "data:image/png;base64," + base64.b64encode(
                     path.read_bytes()
                 ).decode()
-        except OSError:
-            image = ""
+            except OSError:
+                return ""
 
+        # 本地已经渲染过、且不比数据和模板旧的图片直接用
+        if _image_fresh():
+            image = _read_image()
+
+        # 没有可用图片就当场渲染一张：面板里要的是能点开放大的图片，
+        # 不能因为预渲染没跑过就退化成 iframe HTML。
+        # 这里不受聊天渲染冷却限制——是用户主动点击的一次请求。
+        mode = str(self.config.get("panel_render_mode", "auto") or "auto").lower()
+        if not image and mode != "text" and callable(getattr(self, "html_render", None)):
+            rendered = await render_character_card(
+                self,
+                panel,
+                uid,
+                nickname,
+                timeout=min(self._card_timeout(), 60.0),
+                fresh_after=updated_at,
+                save_html=True,
+                inline_images=self._inline_images_enabled(),
+                retry_on_timeout=False,
+                use_rotation=self._rotation_enabled(),
+                preferred_endpoint=self._preferred_endpoint(),
+            )
+            if rendered:
+                # 渲染成功一般会落到本地缓存；写盘失败时拿到的是远端 URL
+                image = _read_image() or (
+                    str(rendered) if str(rendered).startswith("http") else ""
+                )
+
+        # 已经拿到图片就不再生成 HTML：前端只在没有图片时才用 iframe，
+        # 多跑一遍只会白白等一次模板渲染。
         html = ""
-        try:
-            html_path = card_html_path(uid, panel)
-            if (
-                html_path.exists()
-                and html_path.stat().st_mtime
-                >= max(updated_at, template_mtime) - 2
-            ):
-                html = html_path.read_text(encoding="utf-8")
-            else:
-                saved = await save_card_html(panel, uid, nickname)
-                if saved and saved.exists():
-                    html = saved.read_text(encoding="utf-8")
+        if not image:
+            try:
+                html_path = card_html_path(uid, panel)
+                if (
+                    html_path.exists()
+                    and html_path.stat().st_mtime
+                    >= max(updated_at, template_mtime) - 2
+                ):
+                    html = html_path.read_text(encoding="utf-8")
                 else:
-                    html = await build_card_html(panel, uid, nickname)
-        except Exception as exc:
-            logger.warning(f"[星铁面板] 生成角色卡预览失败：{type(exc).__name__}: {exc}")
+                    saved = await save_card_html(panel, uid, nickname)
+                    if saved and saved.exists():
+                        html = saved.read_text(encoding="utf-8")
+                    else:
+                        html = await build_card_html(panel, uid, nickname)
+            except Exception as exc:
+                logger.warning(
+                    f"[星铁面板] 生成角色卡预览失败：{type(exc).__name__}: {exc}"
+                )
 
         return json_response(
             {
