@@ -22,12 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
 
-try:  # 在 AstrBot 里用它的 logger，单独跑脚本时退回标准库
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 HERE = Path(__file__).resolve().parent
 

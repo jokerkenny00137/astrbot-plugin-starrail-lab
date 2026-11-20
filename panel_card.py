@@ -22,13 +22,10 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
-try:  # 在 AstrBot 里用它的 logger，单独跑脚本时退回标准库
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 try:
     import aiohttp
@@ -489,9 +486,40 @@ async def save_card_html(
         return None
 
 
+def _inside_plugin_data(path: Path) -> bool:
+    """路径是否落在插件自己的数据目录内（cards/、cache/ 等）。
+
+    渲染结果里的本地路径一律要过这道检查：html_render 的返回值不应被用来
+    读取插件数据目录之外的文件（例如伪造的 `file://` 路径）。
+    """
+    try:
+        path.resolve().relative_to(CARD_CACHE_DIR.parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _local_path(result: str) -> Path:
+    """把本地文件路径或 `file://` URL 转成 Path（兼容 Windows 盘符）。"""
+    if result.startswith("file://"):
+        parsed = urlparse(result)
+        raw = url2pathname(unquote(parsed.path))
+        if parsed.netloc:  # file://server/share/...
+            raw = f"//{parsed.netloc}{raw}"
+        return Path(raw)
+    return Path(result)
+
+
 async def _store_image(result: str, path: Path) -> bool:
-    """把 html_render 的结果（URL 或本地文件）落到缓存目录。"""
+    """把 html_render 的结果（URL 或本地文件）落到缓存目录。
+
+    只读写插件数据目录内的文件，超出范围一律拒绝并记日志。
+    """
     if not result:
+        return False
+
+    if not _inside_plugin_data(path):
+        _log(f"拒绝写入插件数据目录之外的路径：{path}")
         return False
 
     try:
@@ -511,8 +539,11 @@ async def _store_image(result: str, path: Path) -> bool:
             path.write_bytes(raw)
             return True
 
-        src = Path(result[7:] if result.startswith("file://") else result)
-        if not src.exists():
+        src = _local_path(result)
+        if not _inside_plugin_data(src):
+            _log(f"拒绝读取插件数据目录之外的文件：{src}")
+            return False
+        if not src.is_file():
             return False
         if src.resolve() != path.resolve():
             shutil.copyfile(src, path)

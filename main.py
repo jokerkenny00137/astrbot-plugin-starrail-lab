@@ -491,7 +491,6 @@ class StarRailPanelPlugin(Star):
             else:
                 yield event.plain_result(f"UID {uid} 正在刷新中，请稍候再查。")
             return
-        extra = ""
 
         # 本地优先：数据库里已经有这个 UID 的面板就直接用，只有「刷新」才联网。
         # 这样玩家查询不会被公共接口的排队/解析库滞后卡住。
