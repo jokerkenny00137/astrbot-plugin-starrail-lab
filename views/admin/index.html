@@ -39,6 +39,21 @@
         <path d="M20 12a8 8 0 1 1-2.6-5.9" />
         <path d="M20 4.4V10h-5.6" />
       </symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24">
+        <path d="M4 7h16M4 12h16M4 17h16" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="M6 6l12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14M5 12h14" />
+      </symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24">
+        <path d="M5 12h14" />
+      </symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24">
+        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" />
+      </symbol>
     </svg>
 
     <div class="shell">
@@ -65,9 +80,19 @@
             <strong>星穹铁道面板</strong>
             <span>Star Rail Panel</span>
           </div>
+          <button
+            class="menu-toggle"
+            id="btn-menu"
+            type="button"
+            aria-expanded="false"
+            aria-controls="nav"
+          >
+            <svg class="ico"><use href="#i-menu" /></svg>
+            <span>菜单</span>
+          </button>
         </div>
 
-        <nav class="nav" aria-label="控制面板导航">
+        <nav class="nav" id="nav" aria-label="控制面板导航">
           <button class="tab active" data-tab="bindings">
             <span class="tab-ico"><svg class="ico"><use href="#i-users" /></svg></span>
             <span class="tab-label">绑定管理</span>
@@ -102,6 +127,8 @@
           <p class="side-tip">数据保存在本机 plugin_data，不会上传。</p>
         </div>
       </aside>
+
+      <div class="nav-mask" id="nav-mask" hidden></div>
 
       <!-- ================= 主区 ================= -->
       <main class="main">
@@ -227,30 +254,36 @@
             <!-- 横向角色选择条 -->
             <div class="char-strip" id="char-list"></div>
 
-            <div class="pane">
-              <div class="pane-head">
-                <span class="pane-title">角色卡</span>
-                <div class="seg" role="group" aria-label="角色卡显示方式">
-                  <button id="btn-show-image" class="ghost active">图片</button>
-                  <button id="btn-show-html" class="ghost">HTML</button>
+            <div class="detail-columns">
+              <div class="pane card-pane">
+                <div class="pane-head">
+                  <span class="pane-title">角色卡</span>
+                  <button id="btn-expand-card" class="ghost pane-action" hidden>
+                    <svg class="ico"><use href="#i-expand" /></svg>
+                    <span>放大查看</span>
+                  </button>
+                </div>
+                <div class="preview" id="preview">
+                  <p class="muted" id="preview-tip">选择上方角色查看角色卡</p>
+                  <div id="preview-img-wrap" hidden>
+                    <img id="preview-img" alt="角色卡" />
+                  </div>
+                  <iframe
+                    id="preview-frame"
+                    title="角色卡预览"
+                    sandbox=""
+                    hidden
+                  ></iframe>
                 </div>
               </div>
-              <div class="preview" id="preview">
-                <p class="muted" id="preview-tip">选择上方角色查看角色卡</p>
-                <div id="preview-img-wrap" hidden>
-                  <img id="preview-img" alt="角色卡" />
+
+              <div class="pane text-pane">
+                <div class="pane-head">
+                  <span class="pane-title">文字面板</span>
                 </div>
-                <iframe
-                  id="preview-frame"
-                  title="角色卡预览"
-                  sandbox=""
-                  hidden
-                ></iframe>
+                <pre id="preview-text" class="preview-text">选择角色查看文字面板</pre>
               </div>
             </div>
-
-            <!-- 只在图片与 HTML 都渲染失败时才显示 -->
-            <pre id="preview-text" class="preview-text" hidden></pre>
           </section>
         </div>
 
@@ -303,6 +336,34 @@
           plugin_data 目录，查询时优先使用本地数据。
         </footer>
       </main>
+    </div>
+
+    <!-- 角色卡放大查看 -->
+    <div class="lightbox" id="lightbox" hidden>
+      <div class="lightbox-mask" id="lightbox-mask"></div>
+      <div class="lightbox-panel" role="dialog" aria-modal="true" aria-label="角色卡大图">
+        <div class="lightbox-bar">
+          <span class="lightbox-title" id="lightbox-title">角色卡</span>
+          <div class="lightbox-tools">
+            <button class="ghost" id="btn-zoom-out" title="缩小" aria-label="缩小">
+              <svg class="ico"><use href="#i-minus" /></svg>
+            </button>
+            <button class="ghost zoom-value" id="btn-zoom-reset" title="恢复适应大小">
+              适应
+            </button>
+            <button class="ghost" id="btn-zoom-in" title="放大" aria-label="放大">
+              <svg class="ico"><use href="#i-plus" /></svg>
+            </button>
+            <button class="ghost" id="btn-lightbox-close" title="关闭" aria-label="关闭">
+              <svg class="ico"><use href="#i-close" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="lightbox-stage" id="lightbox-stage">
+          <img id="lightbox-img" alt="角色卡大图" />
+        </div>
+        <p class="lightbox-tip">滚轮或按钮缩放，拖动查看细节，Esc 或点击遮罩关闭</p>
+      </div>
     </div>
 
     <script type="module" src="./app.js"></script>

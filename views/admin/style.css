@@ -203,6 +203,33 @@ body {
 
 /* ---------------- 侧边导航 ---------------- */
 
+/* 手机端的菜单按钮，桌面隐藏 */
+.menu-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  flex: none;
+}
+
+.menu-toggle .ico {
+  width: 15px;
+  height: 15px;
+}
+
+/* 抽屉打开时的遮罩 */
+.nav-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(4, 10, 22, 0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
 .nav {
   position: relative;
   display: flex;
@@ -882,7 +909,14 @@ td.acts button {
   font-size: 12px;
 }
 
-/* ---------------- 角色卡 ---------------- */
+/* ---------------- 角色卡 / 文字面板 ---------------- */
+
+.detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.85fr);
+  gap: 14px;
+  align-items: start;
+}
 
 .pane {
   display: flex;
@@ -910,83 +944,206 @@ td.acts button {
   color: var(--gold);
 }
 
-.seg {
+.pane-action {
   display: inline-flex;
-  gap: 3px;
-  padding: 3px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.seg button {
-  padding: 4px 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
   font-size: 11.5px;
 }
 
-.seg button:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--text);
-  transform: none;
+.pane-action .ico {
+  width: 13px;
+  height: 13px;
 }
 
-.seg button.active {
-  background: linear-gradient(135deg, #f7e3b4, var(--gold-deep));
-  color: #1d1608;
-  font-weight: 600;
-}
-
+/* 图片按容器高度缩放，一屏放下，不用滚动 */
 .preview {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   min-width: 0;
-  max-height: 78vh;
+  height: min(72vh, 780px);
   padding: 12px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .preview .muted {
   margin: 0;
   padding: 14px 10px;
+  text-align: center;
+}
+
+#preview-img-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
 }
 
 #preview-img {
   display: block;
   max-width: 100%;
+  max-height: 100%;
+  width: auto;
   border-radius: var(--radius-md);
+  cursor: zoom-in;
+  transition: transform 0.2s ease;
+}
+
+#preview-img:hover {
+  transform: scale(1.008);
 }
 
 #preview-frame {
-  width: 760px;
-  max-width: 100%;
-  height: 820px;
+  width: 100%;
+  height: 100%;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
 }
 
-/* 渲染失败时的文字兜底，正常情况不显示 */
+.text-pane .preview-text {
+  flex: 1 1 auto;
+}
+
 .preview-text {
-  margin: 14px 0 0;
+  margin: 0;
   padding: 14px 16px;
-  max-height: 60vh;
+  max-height: min(72vh, 780px);
   overflow: auto;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(6, 16, 32, 0.34);
   font-size: 12px;
   line-height: 1.8;
   white-space: pre-wrap;
   color: var(--text-dim);
 }
 
-.preview-actions {
-  margin-top: 12px;
+/* ---------------- 角色卡放大 ---------------- */
+
+body.no-scroll {
+  overflow: hidden;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.lightbox-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 8, 18, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.lightbox-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 96vw);
+  height: 92vh;
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(232, 198, 124, 0.28);
+  background: linear-gradient(
+    165deg,
+    rgba(26, 52, 92, 0.86),
+    rgba(6, 14, 28, 0.92)
+  );
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: lightbox-in 0.22s ease both;
+}
+
+@keyframes lightbox-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lightbox-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightbox-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.lightbox-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 34px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
+
+.lightbox-tools .zoom-value {
+  min-width: 58px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lightbox-stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+  padding: 14px;
+  background:
+    radial-gradient(80% 60% at 50% 0%, rgba(127, 216, 255, 0.06), transparent 70%),
+    rgba(2, 6, 14, 0.55);
+}
+
+.lightbox-stage img {
+  display: block;
+  flex: none;
+  max-width: none;
+  margin: auto; /* 小于容器时居中，放大后从左上角开始可完整滚动 */
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  cursor: default;
+}
+
+.lightbox-tip {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
 }
 
 /* ---------------- 设置 ---------------- */
@@ -1253,6 +1410,13 @@ td.acts button {
   }
 }
 
+/* 窄桌面 / 平板：角色卡与文字面板上下排列 */
+@media (max-width: 960px) {
+  .detail-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 760px) {
   body {
     padding: 12px;
@@ -1287,7 +1451,7 @@ td.acts button {
 
   #preview-frame {
     width: 100%;
-    height: 560px;
+    height: 100%;
   }
 
   .uid-chip {
@@ -1331,13 +1495,22 @@ td.acts button {
   }
 
   .sidebar {
-    padding: 14px 12px 12px;
+    position: relative;
+    /* 必须高于遮罩(30)，否则抽屉会被自己打开的 mask 挡住 */
+    z-index: 50;
+    padding: 12px 14px;
     border-radius: var(--radius-lg);
+    overflow: visible;
   }
 
   .brand {
     gap: 10px;
-    padding-bottom: 12px;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .menu-toggle {
+    display: inline-flex;
   }
 
   .brand-mark {
@@ -1354,11 +1527,28 @@ td.acts button {
     letter-spacing: 0.16em;
   }
 
-  /* 手机端导航改成竖排列表：彩色图标块 + 名称 + 计数，更像原生菜单 */
+  /* 手机端导航：默认隐藏，点「菜单」拉起抽屉 */
   .nav {
-    display: flex;
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    display: none;
     flex-direction: column;
     gap: 6px;
+    padding: 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(232, 198, 124, 0.3);
+    background: rgba(14, 35, 64, 0.97);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    box-shadow: 0 28px 64px rgba(0, 0, 0, 0.55);
+  }
+
+  .nav.open {
+    display: flex;
+    animation: panel-in 0.18s ease both;
   }
 
   .tab {
@@ -1436,6 +1626,12 @@ td.acts button {
   .side-foot {
     flex-wrap: wrap;
     gap: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .side-tip {
+    display: none;
   }
 
   .topbar {
@@ -1564,12 +1760,30 @@ td.acts button {
     font-size: 11.5px;
   }
 
+  /* 手机端卡片先按屏幕高度缩放，文字面板排在它下面 */
   .preview {
-    max-height: 56vh;
+    height: 58vh;
+  }
+
+  .preview-text {
+    max-height: 52vh;
   }
 
   #preview-frame {
-    height: 460px;
+    height: 100%;
+  }
+
+  .lightbox {
+    padding: 8px;
+  }
+
+  .lightbox-panel {
+    width: 100%;
+    height: 94vh;
+  }
+
+  .lightbox-tip {
+    font-size: 10.5px;
   }
 
   .char-item {

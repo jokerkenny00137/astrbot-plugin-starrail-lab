@@ -89,7 +89,10 @@ function switchTab(name) {
 }
 
 for (const btn of document.querySelectorAll(".tab")) {
-  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  btn.addEventListener("click", () => {
+    switchTab(btn.dataset.tab);
+    closeNav();
+  });
 }
 
 /* ============================ 搜索过滤 ============================ */
@@ -365,7 +368,7 @@ const uidStrip = $("uid-strip");
 const panelsMsg = $("panels-msg");
 const detailCard = $("detail-card");
 const charStrip = $("char-list");
-const fallbackText = $("preview-text");
+const textPane = $("preview-text");
 
 const detail = {
   uid: "",
@@ -375,8 +378,110 @@ const detail = {
   card: null,
 };
 
-// 角色卡显示方式：image / html，缺图时自动回退
-let cardMode = "image";
+/* ============================ 角色卡放大 ============================ */
+
+const lightbox = $("lightbox");
+const lightboxStage = $("lightbox-stage");
+const lightboxImg = $("lightbox-img");
+
+let zoomFit = 1; // 适应屏幕时的缩放比
+let zoomLevel = 1; // 用户额外缩放倍数
+
+function updateLightboxSize() {
+  if (!lightboxImg.naturalWidth) return;
+  const scale = zoomFit * zoomLevel;
+  lightboxImg.style.width = `${Math.round(lightboxImg.naturalWidth * scale)}px`;
+  $("btn-zoom-reset").textContent = `${Math.round(zoomLevel * 100)}%`;
+}
+
+function fitLightbox() {
+  if (!lightboxImg.naturalWidth) return;
+  const pad = 48;
+  const w = lightboxStage.clientWidth - pad;
+  const h = lightboxStage.clientHeight - pad;
+  zoomFit = Math.min(w / lightboxImg.naturalWidth, h / lightboxImg.naturalHeight, 1);
+  zoomLevel = 1;
+  updateLightboxSize();
+}
+
+function setZoom(next) {
+  zoomLevel = Math.min(4, Math.max(0.5, next));
+  updateLightboxSize();
+}
+
+function openLightbox() {
+  const src = $("preview-img").src;
+  if (!src) return;
+  lightboxImg.onload = () => {
+    fitLightbox();
+    lightboxStage.scrollTop = 0;
+    lightboxStage.scrollLeft = 0;
+  };
+  lightboxImg.src = src;
+  $("lightbox-title").textContent =
+    `${detail.name || "角色卡"}${detail.nickname ? " · " + detail.nickname : ""}`;
+  lightbox.hidden = false;
+  document.body.classList.add("no-scroll");
+}
+
+function closeLightbox() {
+  lightbox.hidden = true;
+  lightboxImg.src = "";
+  document.body.classList.remove("no-scroll");
+}
+
+$("btn-expand-card").addEventListener("click", openLightbox);
+$("preview-img").addEventListener("click", openLightbox);
+$("btn-lightbox-close").addEventListener("click", closeLightbox);
+$("lightbox-mask").addEventListener("click", closeLightbox);
+$("btn-zoom-in").addEventListener("click", () => setZoom(zoomLevel * 1.25));
+$("btn-zoom-out").addEventListener("click", () => setZoom(zoomLevel / 1.25));
+$("btn-zoom-reset").addEventListener("click", fitLightbox);
+
+lightboxStage.addEventListener(
+  "wheel",
+  (e) => {
+    if (lightbox.hidden) return;
+    e.preventDefault();
+    setZoom(zoomLevel * (e.deltaY < 0 ? 1.12 : 0.89));
+  },
+  { passive: false }
+);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (!lightbox.hidden) closeLightbox();
+    closeNav();
+  }
+});
+
+/* ============================ 手机端菜单 ============================ */
+
+const navEl = $("nav");
+const menuBtn = $("btn-menu");
+const navMask = $("nav-mask");
+
+function openNav() {
+  navEl.classList.add("open");
+  navMask.hidden = false;
+  menuBtn.setAttribute("aria-expanded", "true");
+}
+
+function closeNav() {
+  navEl.classList.remove("open");
+  navMask.hidden = true;
+  menuBtn.setAttribute("aria-expanded", "false");
+}
+
+menuBtn.addEventListener("click", () => {
+  if (navEl.classList.contains("open")) closeNav();
+  else openNav();
+});
+navMask.addEventListener("click", closeNav);
+
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 560) closeNav();
+});
 
 async function loadPanels() {
   show(panelsMsg, "加载中…");
@@ -475,13 +580,12 @@ async function openDetail(uid) {
 
   $("detail-title").textContent = `UID ${uidText}`;
   charStrip.innerHTML = "";
-  fallbackText.hidden = true;
   $("preview-tip").hidden = false;
   $("preview-tip").textContent = "加载中…";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
-  cardMode = "image";
-  setSegActive("image");
+  $("btn-expand-card").hidden = true;
+  textPane.textContent = "加载中…";
 
   try {
     const resp = await post("panel", { uid: uidText });
@@ -502,6 +606,7 @@ async function openDetail(uid) {
 
     if (!chars.length) {
       $("preview-tip").textContent = "这个玩家没有角色数据";
+      textPane.textContent = "这个玩家没有角色数据";
       return;
     }
 
@@ -511,6 +616,7 @@ async function openDetail(uid) {
   } catch (err) {
     $("preview-tip").hidden = false;
     $("preview-tip").textContent = "读取失败：" + err.message;
+    textPane.textContent = "读取失败：" + err.message;
   }
 }
 
@@ -545,59 +651,35 @@ async function loadCard(name) {
   $("preview-tip").textContent = "生成角色卡中…（首次可能要几秒）";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
-  fallbackText.hidden = true;
+  $("btn-expand-card").hidden = true;
+  textPane.textContent = "生成角色卡中…";
 
   try {
     const resp = await post("card", { uid: detail.uid, name });
     const payload = unwrap(resp, "html") !== undefined ? resp : resp.data || {};
-    detail.card = payload;
-
-    if (payload.image || payload.html) {
-      setCardMode(cardMode);
-    } else if (payload.text) {
-      // 图片与 HTML 都拿不到时才回退文字，正常情况不再占位
-      setSegActive("");
-      $("preview-tip").hidden = true;
-      fallbackText.hidden = false;
-      fallbackText.textContent = payload.text;
-    } else {
-      setSegActive("");
-      $("preview-tip").hidden = false;
-      $("preview-tip").textContent = "没有生成角色卡，请查看自检页";
-    }
+    renderCard(payload);
   } catch (err) {
-    setSegActive("");
     $("preview-tip").hidden = false;
     $("preview-tip").textContent = "生成失败：" + err.message;
+    textPane.textContent = "生成失败：" + err.message;
   }
 }
 
-function setSegActive(mode) {
-  $("btn-show-image").classList.toggle("active", mode === "image");
-  $("btn-show-html").classList.toggle("active", mode === "html");
-}
+/** 优先图片，其次 HTML，都没有才提示；文字面板始终可见 */
+function renderCard(payload) {
+  detail.card = payload;
+  textPane.textContent = payload.text || "没有文字面板";
 
-/** 在「图片」与「HTML」之间切换；缺图时自动回退 HTML */
-function setCardMode(mode) {
-  const card = detail.card || {};
-  if (mode === "image" && card.image) {
-    setSegActive("image");
-    showCardImage(card.image);
+  if (payload.image) {
+    showCardImage(payload.image);
     return;
   }
-  if (card.html) {
-    setSegActive("html");
-    showCardHtml(card.html);
+  if (payload.html) {
+    showCardHtml(payload.html);
     return;
   }
-  if (card.image) {
-    setSegActive("image");
-    showCardImage(card.image);
-    return;
-  }
-  setSegActive("");
   $("preview-tip").hidden = false;
-  $("preview-tip").textContent = "还没有可预览的角色卡";
+  $("preview-tip").textContent = "没有生成角色卡，请查看自检页";
 }
 
 function showCardImage(src) {
@@ -605,11 +687,13 @@ function showCardImage(src) {
   $("preview-frame").hidden = true;
   $("preview-img").src = src;
   $("preview-img-wrap").hidden = false;
+  $("btn-expand-card").hidden = false;
 }
 
 function showCardHtml(html) {
   $("preview-tip").hidden = true;
   $("preview-img-wrap").hidden = true;
+  $("btn-expand-card").hidden = true;
   const frame = $("preview-frame");
   frame.srcdoc = html;
   frame.hidden = false;
@@ -926,18 +1010,6 @@ $("btn-detail-close").addEventListener("click", () => {
 $("btn-detail-refresh").addEventListener("click", () => {
   if (detail.uid) refreshPanel(detail.uid, $("btn-detail-refresh"));
 });
-
-$("btn-show-image").addEventListener("click", () => {
-  cardMode = "image";
-  setCardMode("image");
-});
-
-$("btn-show-html").addEventListener("click", () => {
-  cardMode = "html";
-  setCardMode("html");
-});
-
-
 
 /* ============================ 初始化 ============================ */
 
