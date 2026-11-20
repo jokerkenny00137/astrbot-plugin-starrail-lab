@@ -365,7 +365,7 @@ const uidStrip = $("uid-strip");
 const panelsMsg = $("panels-msg");
 const detailCard = $("detail-card");
 const charStrip = $("char-list");
-const textPane = $("preview-text");
+const fallbackText = $("preview-text");
 
 const detail = {
   uid: "",
@@ -475,12 +475,11 @@ async function openDetail(uid) {
 
   $("detail-title").textContent = `UID ${uidText}`;
   charStrip.innerHTML = "";
-  textPane.textContent = "加载中…";
+  fallbackText.hidden = true;
   $("preview-tip").hidden = false;
   $("preview-tip").textContent = "加载中…";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
-  $("preview-actions").hidden = false;
   cardMode = "image";
   setSegActive("image");
 
@@ -503,7 +502,6 @@ async function openDetail(uid) {
 
     if (!chars.length) {
       $("preview-tip").textContent = "这个玩家没有角色数据";
-      textPane.textContent = "这个玩家没有角色数据";
       return;
     }
 
@@ -511,8 +509,8 @@ async function openDetail(uid) {
     const keep = keepName && chars.find((c) => c.name === keepName);
     await selectCharacter((keep || chars[0]).name || "1");
   } catch (err) {
+    $("preview-tip").hidden = false;
     $("preview-tip").textContent = "读取失败：" + err.message;
-    textPane.textContent = "读取失败：" + err.message;
   }
 }
 
@@ -547,16 +545,21 @@ async function loadCard(name) {
   $("preview-tip").textContent = "生成角色卡中…（首次可能要几秒）";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
-  textPane.textContent = "生成角色卡中…";
+  fallbackText.hidden = true;
 
   try {
     const resp = await post("card", { uid: detail.uid, name });
     const payload = unwrap(resp, "html") !== undefined ? resp : resp.data || {};
     detail.card = payload;
-    textPane.textContent = payload.text || "没有文字面板";
 
     if (payload.image || payload.html) {
       setCardMode(cardMode);
+    } else if (payload.text) {
+      // 图片与 HTML 都拿不到时才回退文字，正常情况不再占位
+      setSegActive("");
+      $("preview-tip").hidden = true;
+      fallbackText.hidden = false;
+      fallbackText.textContent = payload.text;
     } else {
       setSegActive("");
       $("preview-tip").hidden = false;
@@ -566,7 +569,6 @@ async function loadCard(name) {
     setSegActive("");
     $("preview-tip").hidden = false;
     $("preview-tip").textContent = "生成失败：" + err.message;
-    textPane.textContent = "生成失败：" + err.message;
   }
 }
 
@@ -613,9 +615,6 @@ function showCardHtml(html) {
   frame.hidden = false;
 }
 
-function showCardText() {
-  textPane.textContent = (detail.card && detail.card.text) || "没有文字面板";
-}
 
 /* ============================ 设置 ============================ */
 
@@ -938,7 +937,7 @@ $("btn-show-html").addEventListener("click", () => {
   setCardMode("html");
 });
 
-$("btn-show-text").addEventListener("click", showCardText);
+
 
 /* ============================ 初始化 ============================ */
 

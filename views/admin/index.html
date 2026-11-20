@@ -227,41 +227,30 @@
             <!-- 横向角色选择条 -->
             <div class="char-strip" id="char-list"></div>
 
-            <div class="detail-columns">
-              <div class="pane">
-                <div class="pane-head">
-                  <span class="pane-title">角色卡</span>
-                  <div class="seg" role="group" aria-label="角色卡显示方式">
-                    <button id="btn-show-image" class="ghost active">图片</button>
-                    <button id="btn-show-html" class="ghost">HTML</button>
-                  </div>
-                </div>
-                <div class="preview" id="preview">
-                  <p class="muted" id="preview-tip">选择上方角色查看角色卡</p>
-                  <div id="preview-img-wrap" hidden>
-                    <img id="preview-img" alt="角色卡" />
-                  </div>
-                  <iframe
-                    id="preview-frame"
-                    title="角色卡预览"
-                    sandbox=""
-                    hidden
-                  ></iframe>
+            <div class="pane">
+              <div class="pane-head">
+                <span class="pane-title">角色卡</span>
+                <div class="seg" role="group" aria-label="角色卡显示方式">
+                  <button id="btn-show-image" class="ghost active">图片</button>
+                  <button id="btn-show-html" class="ghost">HTML</button>
                 </div>
               </div>
-
-              <div class="pane">
-                <div class="pane-head">
-                  <span class="pane-title">文字面板</span>
+              <div class="preview" id="preview">
+                <p class="muted" id="preview-tip">选择上方角色查看角色卡</p>
+                <div id="preview-img-wrap" hidden>
+                  <img id="preview-img" alt="角色卡" />
                 </div>
-                <pre id="preview-text" class="preview-text">选择上方角色查看文字面板</pre>
+                <iframe
+                  id="preview-frame"
+                  title="角色卡预览"
+                  sandbox=""
+                  hidden
+                ></iframe>
               </div>
             </div>
 
-            <!-- 兼容旧版按钮容器（隐藏，不参与布局） -->
-            <div class="actions preview-actions" id="preview-actions" hidden>
-              <button id="btn-show-text" class="ghost">文字面板</button>
-            </div>
+            <!-- 只在图片与 HTML 都渲染失败时才显示 -->
+            <pre id="preview-text" class="preview-text" hidden></pre>
           </section>
         </div>
 

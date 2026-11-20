@@ -882,14 +882,7 @@ td.acts button {
   font-size: 12px;
 }
 
-/* ---------------- 角色卡 / 文字面板 ---------------- */
-
-.detail-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
+/* ---------------- 角色卡 ---------------- */
 
 .pane {
   display: flex;
@@ -952,7 +945,7 @@ td.acts button {
   align-items: flex-start;
   justify-content: center;
   min-width: 0;
-  max-height: 70vh;
+  max-height: 78vh;
   padding: 12px;
   overflow: auto;
 }
@@ -977,11 +970,15 @@ td.acts button {
   background: transparent;
 }
 
+/* 渲染失败时的文字兜底，正常情况不显示 */
 .preview-text {
-  margin: 0;
+  margin: 14px 0 0;
   padding: 14px 16px;
-  max-height: 70vh;
+  max-height: 60vh;
   overflow: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(6, 16, 32, 0.34);
   font-size: 12px;
   line-height: 1.8;
   white-space: pre-wrap;
@@ -1272,10 +1269,6 @@ td.acts button {
 
   .card {
     padding: 16px;
-  }
-
-  .detail-columns {
-    grid-template-columns: 1fr;
   }
 
   .char-item {

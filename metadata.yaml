@@ -13,6 +13,7 @@ desc: >-
 version: 2.1.0
 author: jokerkenny00137
 repo: https://github.com/jokerkenny00137/astrbot-plugin-starrail-lab
+logo: logo.png
 astrbot_version: ">=4.5.0"
 tags:
   - 星穹铁道
@@ -23,11 +24,4 @@ tags:
 support_platforms:
   - aiocqhttp
   - qq_official
-  - telegram
-  - wecom
-  - lark
-  - dingtalk
-  - discord
-  - slack
-  - kook
-  - satori
+  - qq_official_webhook
