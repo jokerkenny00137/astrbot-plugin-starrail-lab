@@ -13,6 +13,34 @@
   <body>
     <div class="stars" aria-hidden="true"></div>
 
+    <!-- 图标库：全部内联，不依赖任何图片或字体 -->
+    <svg class="sprite" aria-hidden="true">
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="3.2" />
+        <path d="M3.6 19c.6-3.2 2.9-5 5.4-5s4.8 1.8 5.4 5" />
+        <path d="M16 6.4a3 3 0 0 1 0 5.6" />
+        <path d="M17.7 14.6c1.8.6 3 2.2 3.4 4.4" />
+      </symbol>
+      <symbol id="i-star" viewBox="0 0 24 24">
+        <path d="M12 3.4 14.5 9l6 .8-4.4 4.2 1.1 5.9L12 17.2 6.8 19.9l1.1-5.9L3.5 9.8l6-.8Z" />
+      </symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3.2" />
+        <path d="M12 3.2v2.5M12 18.3v2.5M3.2 12h2.5M18.3 12h2.5M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" />
+      </symbol>
+      <symbol id="i-pulse" viewBox="0 0 24 24">
+        <path d="M3 12.4h3.6l2.2-5.6 3.7 10.4 2.3-5.2H21" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="6.2" />
+        <path d="M15.7 15.7 21 21" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M20 12a8 8 0 1 1-2.6-5.9" />
+        <path d="M20 4.4V10h-5.6" />
+      </symbol>
+    </svg>
+
     <div class="shell">
       <!-- ================= 侧边栏 ================= -->
       <aside class="sidebar">
@@ -41,21 +69,21 @@
 
         <nav class="nav" aria-label="控制面板导航">
           <button class="tab active" data-tab="bindings">
-            <span class="tab-ico" aria-hidden="true">◈</span>
+            <span class="tab-ico"><svg class="ico"><use href="#i-users" /></svg></span>
             <span class="tab-label">绑定管理</span>
             <span class="tab-count" id="nav-bindings">0</span>
           </button>
           <button class="tab" data-tab="players">
-            <span class="tab-ico" aria-hidden="true">✦</span>
+            <span class="tab-ico"><svg class="ico"><use href="#i-star" /></svg></span>
             <span class="tab-label">玩家数据</span>
             <span class="tab-count" id="nav-players">0</span>
           </button>
           <button class="tab" data-tab="settings">
-            <span class="tab-ico" aria-hidden="true">⚙</span>
+            <span class="tab-ico"><svg class="ico"><use href="#i-gear" /></svg></span>
             <span class="tab-label">设置</span>
           </button>
           <button class="tab" data-tab="diagnose">
-            <span class="tab-ico" aria-hidden="true">✧</span>
+            <span class="tab-ico"><svg class="ico"><use href="#i-pulse" /></svg></span>
             <span class="tab-label">自检</span>
           </button>
         </nav>
@@ -84,11 +112,11 @@
           </div>
           <div class="topbar-tools">
             <label class="search">
-              <span class="search-ico" aria-hidden="true">⌕</span>
+              <svg class="ico search-ico"><use href="#i-search" /></svg>
               <input
                 id="table-search"
                 type="search"
-                placeholder="搜索 QQ / UID / 昵称"
+                placeholder="搜索 QQ / UID / 角色 / 设置项"
                 autocomplete="off"
               />
             </label>
@@ -181,24 +209,9 @@
               </div>
             </div>
             <p class="muted" id="last-update"></p>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>UID</th>
-                    <th>昵称</th>
-                    <th>角色数</th>
-                    <th>数据更新时间</th>
-                    <th class="col-actions">操作</th>
-                  </tr>
-                </thead>
-                <tbody id="panels-tbody">
-                  <tr>
-                    <td colspan="5" class="empty">加载中…</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+
+            <!-- 横向 UID 选择条：点一下直接看角色，不需要再点「查看」 -->
+            <div class="uid-strip" id="uid-strip"></div>
             <p id="panels-msg" class="msg"></p>
           </section>
 
@@ -211,27 +224,44 @@
               </div>
             </div>
 
-            <div class="detail-body">
-              <div class="char-list" id="char-list"></div>
-              <div class="preview" id="preview">
-                <p class="muted" id="preview-tip">选择左侧角色查看角色卡</p>
-                <div id="preview-img-wrap" hidden>
-                  <img id="preview-img" alt="角色卡" />
+            <!-- 横向角色选择条 -->
+            <div class="char-strip" id="char-list"></div>
+
+            <div class="detail-columns">
+              <div class="pane">
+                <div class="pane-head">
+                  <span class="pane-title">角色卡</span>
+                  <div class="seg" role="group" aria-label="角色卡显示方式">
+                    <button id="btn-show-image" class="ghost active">图片</button>
+                    <button id="btn-show-html" class="ghost">HTML</button>
+                  </div>
                 </div>
-                <iframe
-                  id="preview-frame"
-                  title="角色卡预览"
-                  sandbox=""
-                  hidden
-                ></iframe>
+                <div class="preview" id="preview">
+                  <p class="muted" id="preview-tip">选择上方角色查看角色卡</p>
+                  <div id="preview-img-wrap" hidden>
+                    <img id="preview-img" alt="角色卡" />
+                  </div>
+                  <iframe
+                    id="preview-frame"
+                    title="角色卡预览"
+                    sandbox=""
+                    hidden
+                  ></iframe>
+                </div>
+              </div>
+
+              <div class="pane">
+                <div class="pane-head">
+                  <span class="pane-title">文字面板</span>
+                </div>
+                <pre id="preview-text" class="preview-text">选择上方角色查看文字面板</pre>
               </div>
             </div>
+
+            <!-- 兼容旧版按钮容器（隐藏，不参与布局） -->
             <div class="actions preview-actions" id="preview-actions" hidden>
-              <button id="btn-show-image" class="ghost">图片</button>
-              <button id="btn-show-html" class="ghost">HTML 原始卡片</button>
               <button id="btn-show-text" class="ghost">文字面板</button>
             </div>
-            <pre id="preview-text" class="preview-text" hidden></pre>
           </section>
         </div>
 

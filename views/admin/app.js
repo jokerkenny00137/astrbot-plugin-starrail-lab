@@ -94,11 +94,16 @@ for (const btn of document.querySelectorAll(".tab")) {
 
 /* ============================ 搜索过滤 ============================ */
 
+function currentQuery() {
+  return (searchInput.value || "").trim().toLowerCase();
+}
+
+/** 表格过滤：跳过「空状态行」，无命中时补一条提示行 */
 function filterTable(bodyId) {
   const body = $(bodyId);
   if (!body) return;
 
-  const query = searchInput.value.trim().toLowerCase();
+  const query = currentQuery();
   for (const row of [...body.querySelectorAll("tr")]) {
     if (row.dataset.filterEmpty === "1") row.remove();
   }
@@ -124,9 +129,81 @@ function filterTable(bodyId) {
   }
 }
 
+/** 卡片/胶囊列表过滤（角色名、UID、设置项都用它） */
+function filterChips(containerId, selector) {
+  const box = $(containerId);
+  if (!box) return;
+
+  const query = currentQuery();
+  const nodes = [...box.querySelectorAll(selector)];
+  let shown = 0;
+  for (const node of nodes) {
+    const hit = !query || node.textContent.toLowerCase().includes(query);
+    node.hidden = !hit;
+    if (hit) shown += 1;
+  }
+
+  let tip = box.querySelector("[data-filter-empty]");
+  if (!tip) {
+    tip = el("p", "filter-empty", "没有匹配的项");
+    tip.dataset.filterEmpty = "1";
+    box.appendChild(tip);
+  }
+  tip.hidden = !(query && nodes.length > 0 && shown === 0);
+}
+
+/** 设置项过滤：按分组隐藏，整组都没命中时连标题一起收起来 */
+function filterSettings() {
+  const form = $("settings-form");
+  if (!form) return;
+
+  const query = currentQuery();
+  for (const group of form.querySelectorAll(".setting-group")) {
+    const rows = [...group.querySelectorAll(".setting-row")];
+    let shown = 0;
+    for (const row of rows) {
+      const hit = !query || row.textContent.toLowerCase().includes(query);
+      row.hidden = !hit;
+      if (hit) shown += 1;
+    }
+    group.hidden = rows.length > 0 && shown === 0;
+  }
+}
+
+/** 自检页过滤：检查项 + 键值信息表 */
+function filterDiagnose() {
+  const query = currentQuery();
+
+  const checks = [...document.querySelectorAll("#checks .check")];
+  let shown = 0;
+  for (const node of checks) {
+    const hit = !query || node.textContent.toLowerCase().includes(query);
+    node.hidden = !hit;
+    if (hit) shown += 1;
+  }
+
+  const box = $("checks");
+  if (box) {
+    let tip = box.querySelector("[data-filter-empty]");
+    if (!tip) {
+      tip = el("p", "filter-empty", "没有匹配的检查项");
+      tip.dataset.filterEmpty = "1";
+      box.appendChild(tip);
+    }
+    tip.hidden = !(query && checks.length > 0 && shown === 0);
+  }
+
+  for (const row of document.querySelectorAll("#diag-info tr")) {
+    row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+  }
+}
+
 function applyFilter() {
   filterTable("tbody");
-  filterTable("panels-tbody");
+  filterChips("uid-strip", ".uid-chip");
+  filterChips("char-list", ".char-item");
+  filterSettings();
+  filterDiagnose();
 }
 
 if (searchInput) {
@@ -284,23 +361,29 @@ async function refreshAll(btn) {
 
 /* ============================ 玩家数据 ============================ */
 
-const panelsTbody = $("panels-tbody");
+const uidStrip = $("uid-strip");
 const panelsMsg = $("panels-msg");
 const detailCard = $("detail-card");
+const charStrip = $("char-list");
+const textPane = $("preview-text");
 
 const detail = {
   uid: "",
   nickname: "",
   name: "",
   data: null,
+  card: null,
 };
+
+// 角色卡显示方式：image / html，缺图时自动回退
+let cardMode = "image";
 
 async function loadPanels() {
   show(panelsMsg, "加载中…");
   try {
     const resp = await get("panels");
     const list = unwrap(resp, "panels") || [];
-    renderPanels(list);
+    renderUidStrip(list);
 
     const at = unwrap(resp, "last_update_at");
     const note = unwrap(resp, "last_update_msg");
@@ -311,51 +394,50 @@ async function loadPanels() {
     if (hudStat.update) hudStat.update.textContent = at ? fmtTime(at) : "—";
     applyFilter();
     show(panelsMsg, list.length ? "" : "还没有任何本地存档，先在绑定页刷新一次");
+
+    if (!list.length) {
+      detailCard.hidden = true;
+      return;
+    }
+    // 保留当前选中的人，没有就默认打开最近更新的那位
+    if (!list.some((row) => String(row.uid) === detail.uid)) {
+      await openDetail(list[0].uid);
+    }
   } catch (err) {
     show(panelsMsg, "加载失败：" + err.message, "err");
   }
 }
 
-function renderPanels(list) {
-  panelsTbody.innerHTML = "";
+/** 顶部横向 UID 选择条 */
+function renderUidStrip(list) {
   setPanelCount(list.length);
+  uidStrip.innerHTML = "";
 
   if (!list.length) {
-    const tr = document.createElement("tr");
-    const td = el("td", "empty", "还没有存档，点绑定页的「刷新」拉取数据");
-    td.colSpan = 5;
-    tr.appendChild(td);
-    panelsTbody.appendChild(tr);
+    uidStrip.appendChild(
+      el("p", "strip-empty", "还没有存档，点绑定页的「刷新」拉取数据")
+    );
     return;
   }
 
   for (const item of list) {
-    const tr = document.createElement("tr");
-    tr.appendChild(cell(item.uid));
-    tr.appendChild(cell(item.nickname || "—"));
-    tr.appendChild(cell(item.characters != null ? item.characters : "—"));
-    tr.appendChild(cell(fmtTime(item.updated_at)));
-
-    const td = document.createElement("td");
-    td.className = "acts";
-
-    const btnView = el("button", "", "查看");
-    btnView.addEventListener("click", () => openDetail(item.uid));
-
-    const btnRefresh = el("button", "", "刷新");
-    btnRefresh.addEventListener("click", () =>
-      refreshPanel(item.uid, btnRefresh)
+    const btn = el("button", "uid-chip");
+    btn.dataset.uid = String(item.uid);
+    btn.append(
+      el("span", "uid-name", item.nickname || "未命名"),
+      el("span", "uid-meta", `UID ${item.uid} · ${item.characters ?? 0} 角色`),
+      el("span", "uid-time", fmtTime(item.updated_at))
     );
-
-    td.append(btnView, btnRefresh);
-    tr.appendChild(td);
-    panelsTbody.appendChild(tr);
+    if (String(item.uid) === detail.uid) btn.classList.add("active");
+    btn.addEventListener("click", () => openDetail(item.uid));
+    uidStrip.appendChild(btn);
   }
 }
 
 async function refreshPanel(uid, btn) {
+  const label = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "刷新中";
+  btn.textContent = "刷新中…";
   show(panelsMsg, `正在刷新 UID ${uid}…`);
   try {
     const resp = await post("refresh", { uid });
@@ -374,26 +456,36 @@ async function refreshPanel(uid, btn) {
     show(panelsMsg, "刷新失败：" + err.message + "（旧数据保留）", "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "刷新";
+    btn.textContent = label;
   }
 }
 
-async function openDetail(uid, name) {
-  detail.uid = uid;
+async function openDetail(uid) {
+  const uidText = String(uid);
+  const keepName = detail.name;
+  detail.uid = uidText;
   detail.data = null;
+  detail.card = null;
   detail.name = "";
+
   detailCard.hidden = false;
-  $("detail-title").textContent = `UID ${uid}`;
-  $("char-list").innerHTML = "";
-  $("preview-text").hidden = true;
-  $("preview-frame").hidden = true;
-  $("preview-img-wrap").hidden = true;
-  $("preview-actions").hidden = true;
+  for (const chip of uidStrip.querySelectorAll(".uid-chip")) {
+    chip.classList.toggle("active", chip.dataset.uid === uidText);
+  }
+
+  $("detail-title").textContent = `UID ${uidText}`;
+  charStrip.innerHTML = "";
+  textPane.textContent = "加载中…";
   $("preview-tip").hidden = false;
   $("preview-tip").textContent = "加载中…";
+  $("preview-img-wrap").hidden = true;
+  $("preview-frame").hidden = true;
+  $("preview-actions").hidden = false;
+  cardMode = "image";
+  setSegActive("image");
 
   try {
-    const resp = await post("panel", { uid });
+    const resp = await post("panel", { uid: uidText });
     const data = unwrap(resp, "characters") !== undefined ? resp : resp.data || {};
     const chars =
       (data.data && data.data.characters) ||
@@ -403,44 +495,49 @@ async function openDetail(uid, name) {
     detail.data = { ...data, characters: chars };
     detail.nickname = (data.data && data.data.nickname) || data.nickname || "";
 
-    $("detail-title").textContent = `UID ${uid}${
+    $("detail-title").textContent = `UID ${uidText}${
       detail.nickname ? " · " + detail.nickname : ""
     }`;
 
     renderCharList(chars);
-    $("preview-tip").textContent = chars.length
-      ? "选择左侧角色查看角色卡"
-      : "这个玩家没有角色数据";
 
-    const target = name || (chars[0] && chars[0].name);
-    if (target) await loadCard(target);
+    if (!chars.length) {
+      $("preview-tip").textContent = "这个玩家没有角色数据";
+      textPane.textContent = "这个玩家没有角色数据";
+      return;
+    }
+
+    $("preview-tip").textContent = "选择上方角色查看角色卡";
+    const keep = keepName && chars.find((c) => c.name === keepName);
+    await selectCharacter((keep || chars[0]).name || "1");
   } catch (err) {
     $("preview-tip").textContent = "读取失败：" + err.message;
+    textPane.textContent = "读取失败：" + err.message;
   }
 }
 
+/** 横向角色选择条 */
 function renderCharList(chars) {
-  const box = $("char-list");
-  box.innerHTML = "";
+  charStrip.innerHTML = "";
 
   chars.forEach((c, i) => {
     const btn = el("button", "char-item");
-    const title = el("span", "char-name", c.name || `角色 ${i + 1}`);
-    const meta = el(
-      "span",
-      "char-meta",
-      `Lv${c.level || "-"} · ${c.element || ""} · ${c.weapon_name || "无光锥"}`
+    btn.dataset.name = c.name || String(i + 1);
+    btn.append(
+      el("span", "char-name", c.name || `角色 ${i + 1}`),
+      el("span", "char-meta", `Lv${c.level || "-"} · ${c.element || ""}`),
+      el("span", "char-meta", c.weapon_name || "无光锥")
     );
-    btn.append(title, meta);
-    btn.addEventListener("click", () => {
-      for (const other of box.querySelectorAll(".char-item")) {
-        other.classList.remove("active");
-      }
-      btn.classList.add("active");
-      loadCard(c.name || String(i + 1));
-    });
-    box.appendChild(btn);
+    btn.addEventListener("click", () => selectCharacter(btn.dataset.name));
+    charStrip.appendChild(btn);
   });
+}
+
+async function selectCharacter(name) {
+  for (const item of charStrip.querySelectorAll(".char-item")) {
+    item.classList.toggle("active", item.dataset.name === name);
+  }
+  await loadCard(name);
 }
 
 async function loadCard(name) {
@@ -450,31 +547,60 @@ async function loadCard(name) {
   $("preview-tip").textContent = "生成角色卡中…（首次可能要几秒）";
   $("preview-img-wrap").hidden = true;
   $("preview-frame").hidden = true;
-  $("preview-text").hidden = true;
+  textPane.textContent = "生成角色卡中…";
 
   try {
     const resp = await post("card", { uid: detail.uid, name });
     const payload = unwrap(resp, "html") !== undefined ? resp : resp.data || {};
     detail.card = payload;
+    textPane.textContent = payload.text || "没有文字面板";
 
-    $("preview-actions").hidden = false;
-    if (payload.image) {
-      showCardImage(payload.image);
-    } else if (payload.html) {
-      showCardHtml(payload.html);
+    if (payload.image || payload.html) {
+      setCardMode(cardMode);
     } else {
+      setSegActive("");
+      $("preview-tip").hidden = false;
       $("preview-tip").textContent = "没有生成角色卡，请查看自检页";
-      $("preview-actions").hidden = true;
     }
   } catch (err) {
+    setSegActive("");
+    $("preview-tip").hidden = false;
     $("preview-tip").textContent = "生成失败：" + err.message;
+    textPane.textContent = "生成失败：" + err.message;
   }
+}
+
+function setSegActive(mode) {
+  $("btn-show-image").classList.toggle("active", mode === "image");
+  $("btn-show-html").classList.toggle("active", mode === "html");
+}
+
+/** 在「图片」与「HTML」之间切换；缺图时自动回退 HTML */
+function setCardMode(mode) {
+  const card = detail.card || {};
+  if (mode === "image" && card.image) {
+    setSegActive("image");
+    showCardImage(card.image);
+    return;
+  }
+  if (card.html) {
+    setSegActive("html");
+    showCardHtml(card.html);
+    return;
+  }
+  if (card.image) {
+    setSegActive("image");
+    showCardImage(card.image);
+    return;
+  }
+  setSegActive("");
+  $("preview-tip").hidden = false;
+  $("preview-tip").textContent = "还没有可预览的角色卡";
 }
 
 function showCardImage(src) {
   $("preview-tip").hidden = true;
   $("preview-frame").hidden = true;
-  $("preview-text").hidden = true;
   $("preview-img").src = src;
   $("preview-img-wrap").hidden = false;
 }
@@ -482,19 +608,13 @@ function showCardImage(src) {
 function showCardHtml(html) {
   $("preview-tip").hidden = true;
   $("preview-img-wrap").hidden = true;
-  $("preview-text").hidden = true;
   const frame = $("preview-frame");
   frame.srcdoc = html;
   frame.hidden = false;
 }
 
 function showCardText() {
-  $("preview-tip").hidden = true;
-  $("preview-img-wrap").hidden = true;
-  $("preview-frame").hidden = true;
-  $("preview-text").textContent =
-    (detail.card && detail.card.text) || "没有文字面板";
-  $("preview-text").hidden = false;
+  textPane.textContent = (detail.card && detail.card.text) || "没有文字面板";
 }
 
 /* ============================ 设置 ============================ */
@@ -502,6 +622,17 @@ function showCardText() {
 const settingsForm = $("settings-form");
 const settingsMsg = $("settings-msg");
 let settingsSpecs = {};
+
+/** 按 spec.group 分组，保持后端给定的顺序 */
+function groupSpecs(specs) {
+  const groups = new Map();
+  for (const [key, spec] of Object.entries(specs)) {
+    const name = spec.group || "其他";
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push([key, spec]);
+  }
+  return groups;
+}
 
 async function loadSettings() {
   show(settingsMsg, "读取中…");
@@ -512,9 +643,17 @@ async function loadSettings() {
     settingsSpecs = payload.specs || {};
 
     settingsForm.innerHTML = "";
-    for (const [key, spec] of Object.entries(settingsSpecs)) {
-      settingsForm.appendChild(buildSettingRow(key, spec, values[key]));
+    for (const [group, items] of groupSpecs(settingsSpecs)) {
+      const section = el("section", "setting-group");
+      section.appendChild(el("h3", "group-title", group));
+      const grid = el("div", "setting-grid");
+      for (const [key, spec] of items) {
+        grid.appendChild(buildSettingRow(key, spec, values[key]));
+      }
+      section.appendChild(grid);
+      settingsForm.appendChild(section);
     }
+    applyFilter();
 
     if (payload.persist_supported === false) {
       show(
@@ -790,12 +929,13 @@ $("btn-detail-refresh").addEventListener("click", () => {
 });
 
 $("btn-show-image").addEventListener("click", () => {
-  if (detail.card && detail.card.image) showCardImage(detail.card.image);
-  else if (detail.card && detail.card.html) showCardHtml(detail.card.html);
+  cardMode = "image";
+  setCardMode("image");
 });
 
 $("btn-show-html").addEventListener("click", () => {
-  if (detail.card && detail.card.html) showCardHtml(detail.card.html);
+  cardMode = "html";
+  setCardMode("html");
 });
 
 $("btn-show-text").addEventListener("click", showCardText);
