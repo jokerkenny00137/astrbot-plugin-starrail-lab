@@ -173,6 +173,18 @@ def get_guide(name: str) -> Optional[str]:
     return None
 
 
+def _variant_key(name: str) -> str:
+    """取角色名括号里的形态说明：「三月七（虚数 · 巡猎）」→「虚数巡猎」。
+
+    不能直接用 _norm，它会把括号内容一并删掉。
+    """
+    found = re.search(r"[（(]([^（()）]*)[)）]", str(name or ""))
+    if not found:
+        return ""
+    inner = found.group(1)
+    return re.sub(r"[\s·・、,，。.．:：\-_/\\]+", "", inner).lower()
+
+
 def match_guide_names(text: str, limit: int = 2) -> List[str]:
     """从一段话里找出提到的已收录角色，用于请求前预注入资料。
 
@@ -207,7 +219,29 @@ def match_guide_names(text: str, limit: int = 2) -> List[str]:
 
     # 按在句子里出现的先后排序：先提到的角色优先注入
     hits.sort(key=lambda item: item[0])
-    return [name for _, name in hits[:limit]]
+    names = [name for _, name in hits]
+
+    # 同一角色的多个形态（三月七 / 三月七（虚数 · 巡猎））只留最贴近说法的那个：
+    # 用户没提括号里的内容，就只要基础形态，否则两份资料一起塞进去会把模型绕晕。
+    kept: List[str] = []
+    for name in sorted(names, key=len):
+        redundant = False
+        for short in kept:
+            if name == short:
+                continue
+            # 形态文件形如「三月七（虚数 · 巡猎）」，用原始名判断，别用归一化后的
+            if not (name.startswith(short + "（") or name.startswith(short + "(")):
+                continue
+            extra_norm = _variant_key(name)
+            if extra_norm and extra_norm not in norm_text:
+                redundant = True
+                break
+        if not redundant:
+            kept.append(name)
+
+    # 恢复成句中出现顺序
+    ordered = [name for name in names if name in kept]
+    return ordered[:limit]
 
 
 def get_guide_title(text: str) -> str:
