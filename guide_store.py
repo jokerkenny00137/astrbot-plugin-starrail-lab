@@ -3,10 +3,11 @@
 机制卡用来解决「AI 凭记忆编造技能机制」的问题：把角色定位、核心机制、
 关键属性写成短文档，AI 回答前先查，查不到就明确说没有资料。
 
-目录优先级：
-    1. 插件数据目录下的 guides/（用户可改，升级插件不会覆盖）
-    2. 插件自带的 guides/（随插件分发）
-同名文件以用户目录为准。
+目录优先级（后者覆盖前者）：
+    1. 插件自带的 guides/（随插件分发）
+    2. plugin_data/guides/auto/（自动从 StarRailRes 同步，可被重新生成）
+    3. plugin_data/guides/（用户手写，优先级最高，不会被同步覆盖）
+同名文件以优先级高的为准。
 
 文件格式（首行必须是标题，匹配靠它）：
     # 黄泉（虚数 · 虚无 · 主C）
@@ -26,6 +27,9 @@ BUILTIN_DIR = Path(__file__).resolve().parent / "guides"
 
 # 用户可改的机制卡目录（由 main.py 指向 plugin_data/guides）
 _USER_DIR: Path = Path(__file__).resolve().parent / "data" / "guides"
+
+# 自动同步生成的子目录：可以随时被重新生成，所以和手写资料分开
+AUTO_DIRNAME = "auto"
 
 # 文件名 -> (mtime, 正文)
 _CACHE: Dict[str, Tuple[float, str]] = {}
@@ -60,13 +64,24 @@ def _scan(folder: Path) -> Dict[str, Path]:
     return found
 
 
+def get_auto_dir() -> Path:
+    """自动同步目录：plugin_data/guides/auto。"""
+    return _USER_DIR / AUTO_DIRNAME
+
+
+def get_user_dir() -> Path:
+    """用户手写目录：plugin_data/guides。"""
+    return _USER_DIR
+
+
 def reload_guides() -> Dict[str, str]:
-    """重新扫描两个目录，按 mtime 增量读取，返回现有全部机制卡。"""
+    """重新扫描三个目录，按 mtime 增量读取，返回现有全部机制卡。"""
     global _CACHE
 
     files: Dict[str, Path] = {}
+    # 顺序即优先级：后面的同名文件覆盖前面的
     files.update(_scan(BUILTIN_DIR))
-    # 用户目录后写入，同名时覆盖内置版本
+    files.update(_scan(get_auto_dir()))
     files.update(_scan(_USER_DIR))
 
     fresh: Dict[str, Tuple[float, str]] = {}

@@ -16,6 +16,7 @@
     /角色资料                查看已收录的角色机制卡
     /角色资料 <角色名>        预览某个角色的机制卡
     /重载资料                管理员指令，改完 guides/ 后重新读取
+    /同步资料                管理员指令，立刻从 StarRailRes 同步机制卡
 
 特性：
     * 查询默认读本地存档，只有「刷新」/ 管理员 / 定时任务才联网
@@ -59,6 +60,12 @@ try:  # AstrBot 以包的形式加载插件
         list_guide_names,
         set_guide_dir,
     )
+    from .guide_sync import (
+        count_auto_guides,
+        read_synced_at,
+        read_local_version,
+        sync_guides,
+    )
     from .panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from .panel_card import (
         build_card_html,
@@ -100,6 +107,12 @@ except ImportError:  # 以普通脚本方式被导入时
         get_guide,
         list_guide_names,
         set_guide_dir,
+    )
+    from guide_sync import (
+        count_auto_guides,
+        read_synced_at,
+        read_local_version,
+        sync_guides,
     )
     from panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from panel_card import (
@@ -329,6 +342,13 @@ class StarRailPanelPlugin(Star):
         # 最近一次数据更新的结果，给控制面板看
         self._last_update_at = 0.0
         self._last_update_msg = ""
+        # 机制卡同步：用上次成功时间做 TTL 基准，重启后不会立刻重拉
+        self._guide_sync_at = read_synced_at()
+        self._guide_sync_task: asyncio.Task | None = None
+        self._guide_sync_last: Dict[str, Any] = {}
+        self._guide_syncing = False
+        # 同步失败后 10 分钟内不再重试，避免每次提问都白等
+        self._guide_sync_failed_at = 0.0
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
@@ -337,6 +357,9 @@ class StarRailPanelPlugin(Star):
             logger.info(f"[星铁面板] 自动更新已开启，间隔 {minutes} 分钟")
 
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+
+        if self._guide_sync_enabled():
+            self._guide_sync_task = asyncio.create_task(self._first_guide_sync())
 
         self._register_web_apis()
 
@@ -483,6 +506,72 @@ class StarRailPanelPlugin(Star):
             return 1200
         return max(200, min(4000, value))
 
+    def _guide_sync_enabled(self) -> bool:
+        value = self.config.get("guide_auto_sync", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _guide_sync_hours(self) -> float:
+        try:
+            value = float(self.config.get("guide_sync_hours", 6) or 6)
+        except (TypeError, ValueError):
+            return 6.0
+        return max(1.0, min(168.0, value))
+
+    def _guide_sync_due(self) -> bool:
+        now = time.time()
+        if now - self._guide_sync_failed_at < 600:
+            return False
+        return now - self._guide_sync_at >= self._guide_sync_hours() * 3600
+
+    async def _run_guide_sync(self, force: bool = False) -> Dict[str, Any]:
+        """执行一次同步。任何异常都收敛成结果字典。"""
+        if self._guide_syncing:
+            return {"ok": False, "error": "正在同步中", "written": 0}
+        self._guide_syncing = True
+        try:
+            result = await sync_guides(force=force)
+        except Exception as exc:
+            logger.exception("[星铁面板] 同步机制卡出错")
+            result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "written": 0,
+            }
+        finally:
+            self._guide_syncing = False
+
+        self._guide_sync_last = result or {}
+        if self._guide_sync_last.get("ok"):
+            self._guide_sync_at = time.time()
+        else:
+            self._guide_sync_failed_at = time.time()
+        return self._guide_sync_last
+
+    async def _maybe_guide_sync(self, wait: float = 8.0) -> None:
+        """资料缺失时顺带同步一次；超过 wait 秒就转后台，不拖住回答。"""
+        if not self._guide_sync_enabled() or not self._guide_sync_due():
+            return
+        task = asyncio.create_task(self._run_guide_sync())
+        self._guide_sync_task = task
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+        except asyncio.TimeoutError:
+            logger.info(f"[星铁面板] 机制卡同步超过 {wait:.0f} 秒，转后台继续")
+        except Exception:
+            pass
+
+    async def _first_guide_sync(self) -> None:
+        """启动后延迟几秒跑一次，别和插件加载抢网络。"""
+        await asyncio.sleep(5)
+        if not self._guide_sync_enabled():
+            return
+        # 上次同步还在有效期内且有文件，就不用再拉
+        if not self._guide_sync_due() and count_auto_guides():
+            return
+        await self._run_guide_sync()
+
     @filter.llm_tool(name="query_character_guide")
     async def query_character_guide(self, event: AstrMessageEvent, character: str):
         """查询《崩坏：星穹铁道》某个角色的定位、核心机制、关键属性与常见误区。
@@ -497,6 +586,10 @@ class StarRailPanelPlugin(Star):
             return "本地机制卡功能已关闭。请明确告知用户你没有该角色的机制资料，不要凭记忆描述。"
 
         text = get_guide(character)
+        if not text:
+            # 本地没有可能是还没同步过，顺带拉一次（最多等几秒）
+            await self._maybe_guide_sync()
+            text = get_guide(character)
         if not text:
             return (
                 f"本地资料中没有「{character}」的机制卡。"
@@ -521,9 +614,18 @@ class StarRailPanelPlugin(Star):
                     "把 md 文件放进插件数据目录的 guides/ 里即可。"
                 )
                 return
+            auto = count_auto_guides()
+            status = ""
+            if auto:
+                synced_at = read_synced_at()
+                status = (
+                    f"\n（其中 {auto} 个来自自动同步，"
+                    f"上次同步 {_fmt_ts(synced_at) if synced_at else '未知'}）"
+                )
             for chunk in _split_text(
                 f"已收录 {len(names)} 个角色的机制卡：\n"
                 + "、".join(names)
+                + status
                 + "\n\n用 /角色资料 <角色名> 查看具体内容。"
             ):
                 yield event.plain_result(chunk)
@@ -548,6 +650,28 @@ class StarRailPanelPlugin(Star):
             f"已重新读取机制卡，共 {len(names)} 个角色。"
             if names
             else "已重新读取，但 guides/ 里没有找到任何 md 文件。"
+        )
+
+    @filter.command("同步资料", alias={"同步机制卡", "更新机制卡"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def sync_guides_command(self, event: AstrMessageEvent):
+        """管理员：立刻从上游同步角色机制卡，不用等自动检查。"""
+        yield event.plain_result("开始同步机制卡，最多需要几十秒…")
+        result = await self._run_guide_sync(force=True)
+        if not result.get("ok"):
+            yield event.plain_result(
+                f"同步失败：{result.get('error') or '未知原因'}\n"
+                "如果是一直失败，多半是服务器访问不了 GitHub / jsDelivr。"
+            )
+            return
+        version = str(result.get("version") or "")[:8] or "未知"
+        if result.get("skipped"):
+            yield event.plain_result(f"资料已是最新（版本 {version}），无需更新。")
+            return
+        yield event.plain_result(
+            f"同步完成：{result.get('written')} 个角色，"
+            f"版本 {version}，耗时 {result.get('elapsed')} 秒。\n"
+            "用 /角色资料 <角色名> 可以直接查看。"
         )
 
     # ------------------------------------------------------------------
@@ -1836,6 +1960,7 @@ class StarRailPanelPlugin(Star):
             self._refresh_task,
             self._precache_task,
             self._maintenance_task,
+            self._guide_sync_task,
             *self._refresh_tasks.values(),
         ):
             if task and not task.done():
