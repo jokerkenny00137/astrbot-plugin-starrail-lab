@@ -56,12 +56,23 @@ except ImportError:
     LIB_AVAILABLE = False
 
 try:  # 遗器评分（纯文本面板也要显示，库版本太新/太旧都不影响主流程）
-    from .relic_score import get_relic_profile, key_stat_names, score_relic
+    from .relic_score import (
+        get_relic_profile,
+        key_stat_names,
+        ranked_key_stats,
+        score_relic,
+    )
 except ImportError:
     try:
-        from relic_score import get_relic_profile, key_stat_names, score_relic
+        from relic_score import (
+            get_relic_profile,
+            key_stat_names,
+            ranked_key_stats,
+            score_relic,
+        )
     except Exception:  # noqa: BLE001 - 评分是可选能力
         get_relic_profile = key_stat_names = score_relic = None  # type: ignore[assignment]
+        ranked_key_stats = None  # type: ignore[assignment]
 
 
 # 属性伤害的中文名。库里的角色属性是英文，这里做一次翻译。
@@ -591,8 +602,84 @@ def find_character(result: Dict[str, Any], keyword: str) -> Any:
     return None
 
 
-def build_llm_summary(result: Dict[str, Any], max_chars: int = 3000) -> str:
-    """生成一份给大模型看的紧凑摘要（不含每条副词条，控制长度）。"""
+# 权重低于这个值的词条算「填充项」，不算该角色的有效副词条
+_SUB_WEIGHT_FLOOR = 0.3
+
+
+def _effective_sub_affixes(
+    relics: List[Dict[str, Any]],
+    weight: Dict[str, float],
+    limit: int = 4,
+) -> List[str]:
+    """把六件遗器里「有效」的副词条按属性汇总，给 AI 看整体词条质量。
+
+    只保留权重够高的词条：权重 0.1 那档是通用填充，堆了也不该算优势。
+    """
+    buckets: Dict[tuple, float] = {}
+    for relic in relics:
+        for sub in relic.get("subs") or []:
+            prop = str(sub.get("property") or "")
+            if weight.get(prop, 0.0) < _SUB_WEIGHT_FLOOR:
+                continue
+            key = (prop, str(sub.get("name") or prop), bool(sub.get("is_percent")))
+            try:
+                buckets[key] = buckets.get(key, 0.0) + float(sub.get("value") or 0.0)
+            except (TypeError, ValueError):
+                continue
+
+    rows: List[tuple] = []
+    for (prop, name, is_percent), value in buckets.items():
+        text = f"{name}+{value * 100:.1f}%" if is_percent else f"{name}+{value:.0f}"
+        rows.append((weight.get(prop, 0.0), value, text))
+    rows.sort(key=lambda row: (-row[0], -row[1]))
+    return [row[2] for row in rows[:limit]]
+
+
+def format_relic_detail(panel: Dict[str, Any]) -> str:
+    """单个角色的六件遗器明细（含全部副词条与评分），给 AI 回答词条问题时用。"""
+    relics = panel.get("relics") or []
+    if not relics:
+        return ""
+
+    profile = (
+        get_relic_profile(panel.get("avatar_id"))
+        if get_relic_profile is not None
+        else None
+    )
+    weight = (profile or {}).get("weight") or {}
+
+    lines: List[str] = []
+    total = 0.0
+    for relic in relics:
+        subs = "、".join(
+            (
+                f"{sub.get('name', '')}+{float(sub.get('value') or 0) * 100:.1f}%"
+                if sub.get("is_percent")
+                else f"{sub.get('name', '')}+{float(sub.get('value') or 0):.0f}"
+            )
+            for sub in relic.get("subs") or []
+        )
+        score_text = ""
+        if weight and score_relic is not None:
+            value = score_relic(relic.get("subs") or [], weight)
+            total += value
+            score_text = f"｜评分 {value:.1f}/10"
+        lines.append(
+            f"- {relic.get('slot', '')} {relic.get('set_name', '')}"
+            f"｜主词条 {relic.get('main_name', '')}"
+            f"｜副词条 {subs or '无'}{score_text}"
+        )
+
+    if weight:
+        lines.append(f"- 遗器总分 {total:.1f} / 60")
+    return "\n".join(lines)
+
+
+def build_llm_summary(result: Dict[str, Any], max_chars: int = 4000) -> str:
+    """生成一份给大模型看的摘要：面板数值 + 有效词条 + 副词条汇总。
+
+    副词条只给按权重筛过的汇总，完整明细由 format_relic_detail 另外提供。
+    """
     chars = result.get("characters", [])
     lines = [
         f"玩家：{result.get('nickname', '未知玩家')}（UID {result.get('uid', '')}），"
@@ -614,6 +701,17 @@ def build_llm_summary(result: Dict[str, Any], max_chars: int = 3000) -> str:
         if c["break_effect"]:
             parts.append(f"击破特攻{c['break_effect'] * 100:.1f}%")
 
+        # 该角色「堆什么」由权重表决定，直接告诉 AI，别让它对着面板数字猜
+        profile = (
+            get_relic_profile(c.get("avatar_id"))
+            if get_relic_profile is not None
+            else None
+        )
+        if profile and ranked_key_stats is not None:
+            keys = ranked_key_stats(profile["weight"])
+            if keys:
+                parts.append("有效词条：" + "/".join(keys))
+
         set_count: Dict[str, int] = {}
         for relic in c["relics"]:
             name = relic["set_name"]
@@ -624,6 +722,12 @@ def build_llm_summary(result: Dict[str, Any], max_chars: int = 3000) -> str:
             )
             mains = [r["main_name"] for r in c["relics"]]
             parts.append("主词条：" + "、".join(mains))
+            if profile:
+                sub_text = _effective_sub_affixes(
+                    c["relics"], profile.get("weight") or {}
+                )
+                if sub_text:
+                    parts.append("有效副词条：" + " ".join(sub_text))
 
         lines.append("- " + "｜".join(parts))
 

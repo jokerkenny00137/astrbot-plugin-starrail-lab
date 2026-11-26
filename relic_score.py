@@ -100,3 +100,25 @@ def key_stat_names(weight: Dict[str, float], threshold: float = KEY_WEIGHT_THRES
         for cn, prop in STAT_KEY_MAP.items()
         if weight.get(prop, 0.0) >= threshold
     }
+
+
+def ranked_key_stats(
+    weight: Dict[str, float],
+    threshold: float = KEY_WEIGHT_THRESHOLD,
+    limit: int = 5,
+) -> List[str]:
+    """按权重从高到低返回关键属性中文名。
+
+    给 AI 用的：权重表本身就是「这个角色堆什么」的答案，
+    直接告诉它，比让它根据面板数值猜要可靠得多。
+    """
+    rows: List[tuple[float, str]] = []
+    for cn, prop in STAT_KEY_MAP.items():
+        try:
+            value = float(weight.get(prop, 0.0))
+        except (TypeError, ValueError):
+            continue
+        if value >= threshold:
+            rows.append((value, cn))
+    rows.sort(key=lambda item: -item[0])
+    return [cn for _, cn in rows[:limit]]

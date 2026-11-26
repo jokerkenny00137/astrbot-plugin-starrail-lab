@@ -98,6 +98,7 @@ try:  # AstrBot 以包的形式加载插件
         format_character_list,
         format_character_panel,
         format_player_report,
+        format_relic_detail,
         query_player,
         set_cache_dir,
     )
@@ -146,6 +147,7 @@ except ImportError:  # 以普通脚本方式被导入时
         format_character_list,
         format_character_panel,
         format_player_report,
+        format_relic_detail,
         query_player,
         set_cache_dir,
     )
@@ -335,6 +337,8 @@ class StarRailPanelPlugin(Star):
         self._chat_rendering = 0
         # (会话|发送者) -> 最近一次查询的 UID，供 /选择查询 使用
         self._last_uid: Dict[str, str] = {}
+        # (会话|发送者) -> 最近一次看过的角色名，注入遗器明细时用
+        self._last_char: Dict[str, str] = {}
         # 渲染失败后进入冷却期，冷却结束会重新尝试出图
         self._card_fail_until = 0.0
         # 当前环境根本没有 html_render 时永久关闭
@@ -574,10 +578,11 @@ class StarRailPanelPlugin(Star):
 
     @filter.llm_tool(name="query_character_guide")
     async def query_character_guide(self, event: AstrMessageEvent, character: str):
-        """查询《崩坏：星穹铁道》某个角色的定位、核心机制、关键属性与常见误区。
+        """查询《崩坏：星穹铁道》角色的技能机制、行迹、星魂与配装方向。
 
-        用户询问角色怎么玩、技能机制、配装思路、是否值得培养时，
-        先调用本工具拿到资料，再基于资料回答。
+        只要用户提到任何星铁角色的技能、行迹、星魂、光锥、遗器套装或
+        「该怎么练」，都必须先调用本工具。本地有资料就以它为准，
+        不要改用联网搜索；本工具明确返回「没有资料」时再去查别的。
 
         Args:
             character(string): 角色中文名，例如「黄泉」「流萤」
@@ -816,6 +821,11 @@ class StarRailPanelPlugin(Star):
                 f"{uid} 1"
             )
             return
+
+        # 记下这个人刚看的是哪个角色，后续注入遗器明细用
+        if len(self._last_char) > 500:
+            self._last_char.clear()
+        self._last_char[self._user_key(event)] = str(panel.get("name") or "")
 
         # 本地已有与当前数据匹配的图片：直接发，不受渲染冷却影响
         cached_image = card_image_path(uid, panel)
@@ -1225,6 +1235,27 @@ class StarRailPanelPlugin(Star):
                 f"{summary}"
             )
 
+            # 刚看过的那个角色：把六件遗器的完整词条一起给。
+            # 摘要里为了控制长度只放了汇总，AI 会据此说「没有副词条」。
+            last_name = self._last_char.get(self._user_key(event), "")
+            if last_name:
+                try:
+                    last_panel = None
+                    fresh_panel = get_panel(str(record.get("uid") or ""))
+                    if fresh_panel:
+                        last_panel = find_character(fresh_panel, last_name)
+                    if last_panel is not None:
+                        detail = format_relic_detail(last_panel)
+                        if detail:
+                            block += (
+                                f"\n\n【{last_name} 的六件遗器明细】\n"
+                                + detail
+                                + "\n以上副词条已全部列出，用户问词条时直接引用，"
+                                "不要再向他索要。"
+                            )
+                except Exception:
+                    logger.debug("[星铁面板] 生成遗器明细失败", exc_info=True)
+
             # 只放「有哪些角色能查」，正文由工具按需返回，避免撑爆上下文
             if self._guide_enabled():
                 names = list_guide_names()
@@ -1236,13 +1267,18 @@ class StarRailPanelPlugin(Star):
                         + "、".join(shown)
                         + more
                         + "\n涉及这些角色的技能机制、行迹、星魂、光锥或遗器套装效果时，"
-                        "先调用 query_character_guide 工具取得资料再回答；"
+                        "先调用 query_character_guide 工具取得资料再回答，"
+                        "不要用联网搜索代替它；"
                         "工具说没有资料的角色，直接告诉用户你没有该角色的机制资料。"
                     )
 
             block += (
                 "\n\n【机制表述纪律】\n"
                 "- 面板数值一律以上面提供的数据为准，不要重新估算。\n"
+                "- 每个角色的「有效词条」来自属性权重表，代表这个角色实际吃哪些属性。"
+                "判断该堆什么时只依据它：不在有效词条里的属性，不要建议用户堆。\n"
+                "- 面板里出现的数值（暴击率、击破特攻等）只用于判断是否达标，"
+                "不代表该属性对这个角色有用。\n"
                 "- 倍率、持续回合、触发条件这类具体数字，资料里没写就不要写，"
                 "只描述定性效果并说明「具体数值以游戏内描述为准」。\n"
                 "- 不要编造版本强度榜、T0 排名、主流抽取共识。\n"
