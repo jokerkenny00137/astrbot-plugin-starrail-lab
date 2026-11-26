@@ -58,8 +58,10 @@ try:  # AstrBot 以包的形式加载插件
         clip_guide,
         get_guide,
         list_guide_names,
+        match_guide_names,
         set_guide_dir,
     )
+    from .guide_store import reload_guides as reload_guide_files
     from .guide_sync import (
         count_auto_guides,
         read_synced_at,
@@ -107,8 +109,10 @@ except ImportError:  # 以普通脚本方式被导入时
         clip_guide,
         get_guide,
         list_guide_names,
+        match_guide_names,
         set_guide_dir,
     )
+    from guide_store import reload_guides as reload_guide_files
     from guide_sync import (
         count_auto_guides,
         read_synced_at,
@@ -523,6 +527,49 @@ class StarRailPanelPlugin(Star):
             return 6.0
         return max(1.0, min(168.0, value))
 
+    def _guide_prefetch(self) -> bool:
+        """检测到角色名时，是否在请求前直接把机制卡塞进上下文。"""
+        value = self.config.get("guide_prefetch", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _guide_block_search(self) -> bool:
+        """预注入资料时，是否本轮临时摘掉联网搜索工具。"""
+        value = self.config.get("guide_block_search", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _drop_search_tools(self, req) -> int:
+        """临时移除本轮请求里的联网搜索工具。
+
+        人格提示词常写「不确定必须先联网」，模型于是先搜再答，本地资料被跳过。
+        这里只在检测到星铁角色名时动手，且只影响这一轮。
+        AstrBot 内部结构变化时静默跳过，不影响正常聊天。
+        """
+        try:
+            tool_set = getattr(req, "func_tool", None)
+            tools = getattr(tool_set, "tools", None)
+            if not isinstance(tools, list):
+                return 0
+            kept = []
+            removed = 0
+            for tool in tools:
+                name = str(getattr(tool, "name", "") or "").lower()
+                if "search" in name or "tavily" in name or "bing" in name:
+                    removed += 1
+                    continue
+                kept.append(tool)
+            if not removed:
+                return 0
+            tool_set.tools = kept
+            logger.debug(f"[星铁面板] 本轮临时禁用 {removed} 个联网搜索工具")
+            return removed
+        except Exception:
+            logger.debug("[星铁面板] 摘除搜索工具失败，跳过", exc_info=True)
+            return 0
+
     def _guide_sync_due(self) -> bool:
         now = time.time()
         if now - self._guide_sync_failed_at < 600:
@@ -650,6 +697,7 @@ class StarRailPanelPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def reload_guides(self, event: AstrMessageEvent):
         """改完 guides/ 里的 md 文件后重新读取，不用重启 AstrBot。"""
+        reload_guide_files(force=True)
         names = list_guide_names()
         yield event.plain_result(
             f"已重新读取机制卡，共 {len(names)} 个角色。"
@@ -1318,6 +1366,59 @@ class StarRailPanelPlugin(Star):
         except Exception:
             # 注入失败绝不能影响正常聊天
             logger.exception("[星铁面板] 注入上下文失败")
+
+    @filter.on_llm_request()
+    async def inject_guide_context(self, event: AstrMessageEvent, req):
+        """用户直接提到已收录角色时，把机制卡提前放进本轮上下文。
+
+        人格提示词里常有「不确定就先联网搜索」，模型于是习惯性先搜，
+        本地资料反而被跳过。这里不等它调用工具，直接把资料摆上，
+        让「不确定」的前提不成立；需要时再顺手摘掉本轮的搜索工具。
+        """
+        try:
+            if not self._guide_enabled() or not self._guide_prefetch():
+                return
+
+            user_text = str(getattr(event, "message_str", "") or "")
+            if not user_text.strip():
+                return
+
+            hits = match_guide_names(user_text, limit=2)
+            if not hits:
+                return
+
+            texts: List[str] = []
+            for name in hits:
+                text = get_guide(name)
+                if text:
+                    texts.append(clip_guide(text, self._guide_max_chars()))
+            if not texts:
+                return
+
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None or TextPart is None:
+                return
+
+            if self._guide_block_search():
+                self._drop_search_tools(req)
+
+            block = (
+                "【本地角色资料（已提供，无需联网搜索）】\n"
+                "以下内容取自游戏原文，可以直接引用。\n\n"
+                + "\n\n".join(texts)
+                + "\n\n用户问的就是这些角色的技能、行迹、星魂或配装方向时，"
+                "直接依据以上资料回答；资料没覆盖的部分才说明不确定。"
+                "不要为了这些角色再去联网搜索。"
+            )
+
+            part = TextPart(text=block)
+            mark_temp = getattr(part, "mark_as_temp", None)
+            if callable(mark_temp):
+                part = mark_temp() or part
+            parts.append(part)
+            logger.debug(f"[星铁面板] 已预注入角色资料：{'、'.join(hits)}")
+        except Exception:
+            logger.exception("[星铁面板] 预注入角色资料失败")
 
     # ------------------------------------------------------------------
     # 绑定

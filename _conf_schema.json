@@ -88,6 +88,18 @@
     "default": 6,
     "hint": "无人提问时不联网；超过这个间隔且下次有查询时才检查上游是否有更新。范围 1~168。"
   },
+  "guide_prefetch": {
+    "description": "提到角色时提前注入机制卡",
+    "type": "bool",
+    "default": true,
+    "hint": "用户消息里出现已收录的角色名时，直接把这名角色的机制卡放进本轮上下文，不等模型调用工具。人格提示词若写了「不确定先联网」，这个开关能避免它抢先搜索。"
+  },
+  "guide_block_search": {
+    "description": "命中角色时本轮禁用联网搜索",
+    "type": "bool",
+    "default": true,
+    "hint": "仅在检测到崩铁角色名的那一轮临时移除联网搜索工具，其他话题不受影响。依赖 AstrBot 内部结构，失效时自动跳过，不影响正常聊天。"
+  },
   "analysis_prompt": {
     "description": "练度分析说明词",
     "type": "string",

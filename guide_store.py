@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -33,6 +34,10 @@ AUTO_DIRNAME = "auto"
 
 # 文件名 -> (mtime, 正文)
 _CACHE: Dict[str, Tuple[float, str]] = {}
+
+# 每条消息都要匹配角色名，目录扫描做 2 秒节流，避免每条消息都 glob 一遍
+_SCAN_INTERVAL = 2.0
+_LAST_SCAN = 0.0
 
 # 单张机制卡给到模型的上限，超长会挤占上下文
 MAX_GUIDE_CHARS = 1200
@@ -74,9 +79,18 @@ def get_user_dir() -> Path:
     return _USER_DIR
 
 
-def reload_guides() -> Dict[str, str]:
-    """重新扫描三个目录，按 mtime 增量读取，返回现有全部机制卡。"""
-    global _CACHE
+def reload_guides(force: bool = False) -> Dict[str, str]:
+    """重新扫描三个目录，按 mtime 增量读取，返回现有全部机制卡。
+
+    2 秒内重复调用会直接返回缓存（每条消息都要匹配角色名，不做节流太浪费）；
+    手动改完文件想立刻生效时传 force=True。
+    """
+    global _CACHE, _LAST_SCAN
+
+    now = time.time()
+    if not force and _CACHE and now - _LAST_SCAN < _SCAN_INTERVAL:
+        return {name: text for name, (_, text) in _CACHE.items()}
+    _LAST_SCAN = now
 
     files: Dict[str, Path] = {}
     # 顺序即优先级：后面的同名文件覆盖前面的
@@ -157,6 +171,43 @@ def get_guide(name: str) -> Optional[str]:
         if key and (key in norm_full or norm_full in key):
             return text
     return None
+
+
+def match_guide_names(text: str, limit: int = 2) -> List[str]:
+    """从一段话里找出提到的已收录角色，用于请求前预注入资料。
+
+    归一化之后比较，所以「阮·梅」「阮 梅」都能命中「阮梅」。
+    单字角色名（如「刃」）容易误伤（「锋刃」「刀刃」），要求前后不是汉字。
+    """
+    raw = str(text or "")
+    if not raw:
+        return []
+
+    norm_text = _norm(raw)
+    if not norm_text:
+        return []
+
+    hits: List[Tuple[int, str]] = []
+    for name in load_guides():
+        norm_name = _norm(name)
+        if not norm_name:
+            continue
+        if len(norm_name) >= 2:
+            pos = norm_text.find(norm_name)
+            matched = pos >= 0
+        else:
+            # 只卡前边界：「锋刃」「白刃」不算，「刃的配队」算
+            found = re.search(
+                rf"(?<![\u4e00-\u9fa5]){re.escape(norm_name)}", norm_text
+            )
+            pos = found.start() if found else -1
+            matched = found is not None
+        if matched:
+            hits.append((pos, name))
+
+    # 按在句子里出现的先后排序：先提到的角色优先注入
+    hits.sort(key=lambda item: item[0])
+    return [name for _, name in hits[:limit]]
 
 
 def get_guide_title(text: str) -> str:
