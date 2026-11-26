@@ -1249,6 +1249,11 @@ class StarRailPanelPlugin(Star):
         不写回会话历史，也不改 system_prompt（避免破坏 prompt 缓存）。
         """
         try:
+            # 角色机制卡预注入：和面板数据无关，没查过面板也要生效。
+            # AstrBot 的 on_llm_request 只保留一个处理器，所以必须放在同一个钩子里。
+            if self._guide_enabled() and self._guide_prefetch():
+                self._prefetch_guide(event, req)
+
             ttl = int(self.config.get("llm_context_ttl_minutes", 0) or 0) * 60
             if ttl <= 0:
                 ttl = DEFAULT_CONTEXT_TTL
@@ -1367,8 +1372,7 @@ class StarRailPanelPlugin(Star):
             # 注入失败绝不能影响正常聊天
             logger.exception("[星铁面板] 注入上下文失败")
 
-    @filter.on_llm_request()
-    async def inject_guide_context(self, event: AstrMessageEvent, req):
+    def _prefetch_guide(self, event: AstrMessageEvent, req) -> None:
         """用户直接提到已收录角色时，把机制卡提前放进本轮上下文。
 
         人格提示词里常有「不确定就先联网搜索」，模型于是习惯性先搜，
@@ -1376,9 +1380,6 @@ class StarRailPanelPlugin(Star):
         让「不确定」的前提不成立；需要时再顺手摘掉本轮的搜索工具。
         """
         try:
-            if not self._guide_enabled() or not self._guide_prefetch():
-                return
-
             user_text = str(getattr(event, "message_str", "") or "")
             if not user_text.strip():
                 return
@@ -1397,6 +1398,10 @@ class StarRailPanelPlugin(Star):
 
             parts = getattr(req, "extra_user_content_parts", None)
             if parts is None or TextPart is None:
+                logger.info(
+                    "[星铁面板] 无法预注入角色资料：当前 AstrBot 不支持 "
+                    "extra_user_content_parts 或 TextPart"
+                )
                 return
 
             if self._guide_block_search():
@@ -1416,7 +1421,7 @@ class StarRailPanelPlugin(Star):
             if callable(mark_temp):
                 part = mark_temp() or part
             parts.append(part)
-            logger.debug(f"[星铁面板] 已预注入角色资料：{'、'.join(hits)}")
+            logger.info(f"[星铁面板] 已预注入角色资料：{'、'.join(hits)}")
         except Exception:
             logger.exception("[星铁面板] 预注入角色资料失败")
 
