@@ -68,6 +68,12 @@ T2I_DEFAULT_ENDPOINT = T2I_DEFAULT_ENDPOINTS[0]
 _ENDPOINT_TTL = 600.0
 _ENDPOINT_CACHE: Tuple[float, List[str]] = (0.0, [])
 
+# 端点健康度：刚返回 5xx 的端点短时间内直接跳过。
+# 官方公共端点过载时会连续 503，之前每个端点都还要重新连一次，
+# 出图被拖到十几秒；记住失败后直接回退旧图/文字。
+_ENDPOINT_COOLDOWN = 90.0
+_ENDPOINT_FAILED_AT: Dict[str, float] = {}
+
 # 公共素材库（jsDelivr 镜像，国内比 raw.githubusercontent.com 稳定）
 ASSET_BASE = "https://cdn.jsdelivr.net/gh/Mar-7th/StarRailRes@master/icon"
 # jsDelivr 对个别文件会返回 403，模板里用这个源兜底
@@ -650,7 +656,24 @@ async def _render_remote(
         if ep and ep not in seen:
             seen.add(ep)
             unique.append(ep)
-    endpoints = unique
+
+    now = time.time()
+    alive = [
+        ep
+        for ep in unique
+        if now - _ENDPOINT_FAILED_AT.get(ep, 0.0) >= _ENDPOINT_COOLDOWN
+    ]
+    if unique and not alive:
+        _log(
+            "所有渲染端点都在冷却中，直接回退（"
+            + "、".join(
+                f"{ep} {now - _ENDPOINT_FAILED_AT.get(ep, 0.0):.0f}s 前失败"
+                for ep in unique
+            )
+            + "）"
+        )
+        return None
+    endpoints = alive
     if not endpoints:
         return None
 
@@ -667,7 +690,8 @@ async def _render_remote(
             remain = deadline - time.time()
             if remain < 3:
                 break
-            attempt_timeout = min(20.0, remain)
+            attempt_timeout = min(15.0, remain)
+            started = time.time()
             try:
                 async with session.post(
                     f"{ep}/generate",
@@ -675,15 +699,26 @@ async def _render_remote(
                     timeout=aiohttp.ClientTimeout(total=attempt_timeout),
                 ) as resp:
                     if resp.status != 200:
-                        _log(f"渲染端点 {ep} 返回 HTTP {resp.status}")
+                        # 5xx 是端点自身的问题（过载/下线），记下来一段时间内不再浪费预算
+                        if resp.status >= 500:
+                            _ENDPOINT_FAILED_AT[ep] = time.time()
+                        _log(
+                            f"渲染端点 {ep} 返回 HTTP {resp.status}"
+                            f"（{time.time() - started:.1f}s）"
+                        )
                         continue
                     data = await resp.json(content_type=None)
                 image_id = (data.get("data") or {}).get("id")
                 if image_id:
+                    _ENDPOINT_FAILED_AT.pop(ep, None)
+                    _log(f"渲染端点 {ep} 成功（{time.time() - started:.1f}s）")
                     return f"{ep}/{image_id}"
                 _log(f"渲染端点 {ep} 返回里没有图片 id")
             except Exception as exc:
-                _log(f"渲染端点 {ep} 失败：{type(exc).__name__}: {exc}")
+                _log(
+                    f"渲染端点 {ep} 失败：{type(exc).__name__}: {exc}"
+                    f"（{time.time() - started:.1f}s）"
+                )
 
     return None
 
@@ -946,6 +981,8 @@ async def probe_render(
 
     if use_rotation and aiohttp is not None:
         started = time.time()
+        # 自检要真实探测链路，不受「失败冷却」影响
+        _ENDPOINT_FAILED_AT.clear()
         url = await _render_remote(template, timeout, preferred_endpoint)
         elapsed = round(time.time() - started, 2)
         if url:

@@ -13,11 +13,16 @@
     /刷新 [UID]              后台刷新该玩家的数据与角色卡；不填 UID 则刷新最近查看/绑定的玩家
     /刷新全部面板            管理员指令，后台刷新所有已绑定玩家
 
+    /角色资料                查看已收录的角色机制卡
+    /角色资料 <角色名>        预览某个角色的机制卡
+    /重载资料                管理员指令，改完 guides/ 后重新读取
+
 特性：
     * 查询默认读本地存档，只有「刷新」/ 管理员 / 定时任务才联网
     * 用户查完面板继续聊天时，数据会自动注入 AI 上下文，让 AI 能据此给建议
     * 支持定时自动更新所有已绑定玩家的面板数据
     * 刷新后在后台预渲染角色卡到本地，查询时优先发本地图
+    * AI 回答角色机制前会调用 query_character_guide 查本地机制卡，查不到就直说
 """
 
 from __future__ import annotations
@@ -48,6 +53,12 @@ except ImportError:
     error_response = json_response = request = None  # type: ignore[assignment]
 
 try:  # AstrBot 以包的形式加载插件
+    from .guide_store import (
+        clip_guide,
+        get_guide,
+        list_guide_names,
+        set_guide_dir,
+    )
     from .panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from .panel_card import (
         build_card_html,
@@ -84,6 +95,12 @@ try:  # AstrBot 以包的形式加载插件
         set_cache_dir,
     )
 except ImportError:  # 以普通脚本方式被导入时
+    from guide_store import (
+        clip_guide,
+        get_guide,
+        list_guide_names,
+        set_guide_dir,
+    )
     from panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from panel_card import (
         build_card_html,
@@ -340,6 +357,8 @@ class StarRailPanelPlugin(Star):
         set_cache_dir(data_dir / "cache")
         set_db_path(data_dir / "starrail.db")
         set_card_cache_dir(data_dir / "cards")
+        # 用户可改的机制卡放 plugin_data 下，升级插件不会覆盖
+        set_guide_dir(data_dir / "guides")
         return data_dir
 
     def _session_key(self, event: AstrMessageEvent) -> str:
@@ -446,6 +465,90 @@ class StarRailPanelPlugin(Star):
         except (TypeError, ValueError):
             return 5.0
         return max(0.0, min(120.0, value))
+
+    # ------------------------------------------------------------------
+    # 角色机制卡（本地资料，供 AI 查询）
+    # ------------------------------------------------------------------
+
+    def _guide_enabled(self) -> bool:
+        value = self.config.get("guide_enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _guide_max_chars(self) -> int:
+        try:
+            value = int(float(self.config.get("guide_tool_max_chars", 1200) or 1200))
+        except (TypeError, ValueError):
+            return 1200
+        return max(200, min(4000, value))
+
+    @filter.llm_tool(name="query_character_guide")
+    async def query_character_guide(self, event: AstrMessageEvent, character: str):
+        """查询《崩坏：星穹铁道》某个角色的定位、核心机制、关键属性与常见误区。
+
+        用户询问角色怎么玩、技能机制、配装思路、是否值得培养时，
+        先调用本工具拿到资料，再基于资料回答。
+
+        Args:
+            character(string): 角色中文名，例如「黄泉」「流萤」
+        """
+        if not self._guide_enabled():
+            return "本地机制卡功能已关闭。请明确告知用户你没有该角色的机制资料，不要凭记忆描述。"
+
+        text = get_guide(character)
+        if not text:
+            return (
+                f"本地资料中没有「{character}」的机制卡。"
+                "请明确告知用户你没有该角色的机制资料，"
+                "不要凭记忆或常识描述其技能、行迹、星魂效果。"
+            )
+        return clip_guide(text, self._guide_max_chars())
+
+    @filter.command("角色资料", alias={"查资料", "机制"})
+    async def show_guide(self, event: AstrMessageEvent, character: str = ""):
+        """查看本地机制卡收录的内容。
+
+        Args:
+            character(string): 角色名；不填则列出已收录的角色
+        """
+        name = (character or "").strip()
+        if not name:
+            names = list_guide_names()
+            if not names:
+                yield event.plain_result(
+                    "本地还没有任何角色机制卡。\n"
+                    "把 md 文件放进插件数据目录的 guides/ 里即可。"
+                )
+                return
+            for chunk in _split_text(
+                f"已收录 {len(names)} 个角色的机制卡：\n"
+                + "、".join(names)
+                + "\n\n用 /角色资料 <角色名> 查看具体内容。"
+            ):
+                yield event.plain_result(chunk)
+            return
+
+        text = get_guide(name)
+        if not text:
+            yield event.plain_result(
+                f"本地没有「{name}」的机制卡。\n"
+                "用 /角色资料 查看已收录的角色。"
+            )
+            return
+        for chunk in _split_text(text):
+            yield event.plain_result(chunk)
+
+    @filter.command("重载资料", alias={"重载机制卡"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def reload_guides(self, event: AstrMessageEvent):
+        """改完 guides/ 里的 md 文件后重新读取，不用重启 AstrBot。"""
+        names = list_guide_names()
+        yield event.plain_result(
+            f"已重新读取机制卡，共 {len(names)} 个角色。"
+            if names
+            else "已重新读取，但 guides/ 里没有找到任何 md 文件。"
+        )
 
     # ------------------------------------------------------------------
     # 面板查询
@@ -996,6 +1099,30 @@ class StarRailPanelPlugin(Star):
                 "不要把它当成别人的角色；摘要里也没有队伍（配队）信息，"
                 "被问到配队时只能基于这些角色给建议，不要编造队伍成员或站位。\n"
                 f"{summary}"
+            )
+
+            # 只放「有哪些角色能查」，正文由工具按需返回，避免撑爆上下文
+            if self._guide_enabled():
+                names = list_guide_names()
+                if names:
+                    shown = names[:40]
+                    more = "" if len(names) <= 40 else f" 等共 {len(names)} 个"
+                    block += (
+                        "\n\n【可查询机制资料的角色】\n"
+                        + "、".join(shown)
+                        + more
+                        + "\n涉及这些角色的技能机制、行迹、星魂、光锥或遗器套装效果时，"
+                        "先调用 query_character_guide 工具取得资料再回答；"
+                        "工具说没有资料的角色，直接告诉用户你没有该角色的机制资料。"
+                    )
+
+            block += (
+                "\n\n【机制表述纪律】\n"
+                "- 面板数值一律以上面提供的数据为准，不要重新估算。\n"
+                "- 倍率、持续回合、触发条件这类具体数字，资料里没写就不要写，"
+                "只描述定性效果并说明「具体数值以游戏内描述为准」。\n"
+                "- 不要编造版本强度榜、T0 排名、主流抽取共识。\n"
+                "- 回答前先自问：这条机制我是确实记得，还是在猜？在猜就删掉。\n"
             )
 
             guide = str(

@@ -64,6 +64,18 @@
     "default": "",
     "hint": "可选，例如 https://t2i.example.com/text2img。留空则使用 AstrBot 配置或官方端点列表。"
   },
+  "guide_enabled": {
+    "description": "启用本地角色机制卡",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 AI 可以调用工具查询 guides/ 里的角色机制卡，减少凭记忆编造机制。资料放在插件数据目录的 guides/ 下，一个角色一个 md 文件。"
+  },
+  "guide_tool_max_chars": {
+    "description": "机制卡返回最大字数",
+    "type": "int",
+    "default": 1200,
+    "hint": "单次查询返回的机制卡内容上限，超出会截断。写太长会挤占对话上下文，建议 800~1500。"
+  },
   "analysis_prompt": {
     "description": "练度分析说明词",
     "type": "string",
