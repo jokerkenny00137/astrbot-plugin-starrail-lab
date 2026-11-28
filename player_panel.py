@@ -74,6 +74,14 @@ except ImportError:
         get_relic_profile = key_stat_names = score_relic = None  # type: ignore[assignment]
         ranked_key_stats = None  # type: ignore[assignment]
 
+try:  # 权重表没收录的角色，用行迹倾向兜底（可选能力）
+    from .trace_sync import get_trace_hint
+except ImportError:
+    try:
+        from trace_sync import get_trace_hint
+    except Exception:  # noqa: BLE001
+        get_trace_hint = None  # type: ignore[assignment]
+
 
 # 属性伤害的中文名。库里的角色属性是英文，这里做一次翻译。
 ELEMENT_CN = {
@@ -711,6 +719,11 @@ def build_llm_summary(result: Dict[str, Any], max_chars: int = 4000) -> str:
             keys = ranked_key_stats(profile["weight"])
             if keys:
                 parts.append("有效词条：" + "/".join(keys))
+        elif get_trace_hint is not None:
+            # 权重表没收录这个角色：用行迹加成当倾向，比让模型按通用标准猜准
+            hint = get_trace_hint(c.get("avatar_id"))
+            if hint:
+                parts.append("权重表未收录，行迹倾向：" + hint)
 
         set_count: Dict[str, int] = {}
         for relic in c["relics"]:

@@ -17,6 +17,7 @@
     /角色资料 <角色名>        预览某个角色的机制卡
     /重载资料                管理员指令，改完 guides/ 后重新读取
     /同步资料                管理员指令，立刻从 StarRailRes 同步机制卡
+                             （顺带更新 Fribbels 的角色行迹倾向）
 
 特性：
     * 查询默认读本地存档，只有「刷新」/ 管理员 / 定时任务才联网
@@ -68,6 +69,8 @@ try:  # AstrBot 以包的形式加载插件
         read_local_version,
         sync_guides,
     )
+    from .trace_sync import count_traces, sync_traces
+    from .trace_sync import read_synced_at as read_trace_synced_at
     from .panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from .panel_card import (
         build_card_html,
@@ -119,6 +122,8 @@ except ImportError:  # 以普通脚本方式被导入时
         read_local_version,
         sync_guides,
     )
+    from trace_sync import count_traces, sync_traces
+    from trace_sync import read_synced_at as read_trace_synced_at
     from panel_card import TEMPLATE_FILE, aiohttp as card_aiohttp
     from panel_card import (
         build_card_html,
@@ -309,6 +314,18 @@ def _fmt_ts(ts: Any) -> str:
         return "未知时间"
 
 
+def _trace_sync_note(result: Any) -> str:
+    """把行迹倾向的同步结果转成一行补充说明，供 /同步资料 使用。"""
+    if not isinstance(result, dict) or not result:
+        return ""
+    if not result.get("ok"):
+        return f"\n（行迹倾向同步失败：{result.get('error') or '未知原因'}）"
+    count = result.get("count") or 0
+    if result.get("skipped"):
+        return f"\n行迹倾向已是最新（{count} 个角色）。"
+    return f"\n行迹倾向已更新（{count} 个角色）。"
+
+
 def _lib_version() -> str:
     """starrail_damage_cal 的版本号，自检用。"""
     try:
@@ -357,6 +374,10 @@ class StarRailPanelPlugin(Star):
         self._guide_syncing = False
         # 同步失败后 10 分钟内不再重试，避免每次提问都白等
         self._guide_sync_failed_at = 0.0
+        # 行迹倾向：权重表没收录的角色用它兜底，跟机制卡同一个同步节奏
+        self._trace_sync_at = read_trace_synced_at()
+        self._trace_sync_last: Dict[str, Any] = {}
+        self._trace_sync_failed_at = 0.0
         logger.info(f"[星铁面板] 已加载，数据目录：{self._data_dir}")
 
         minutes = int(self.config.get("auto_update_minutes", 0) or 0)
@@ -598,7 +619,44 @@ class StarRailPanelPlugin(Star):
             self._guide_sync_at = time.time()
         else:
             self._guide_sync_failed_at = time.time()
+        # 行迹倾向顺带同步，失败不影响机制卡的结果
+        if self._guide_sync_last.get("ok") or not count_traces():
+            try:
+                self._guide_sync_last["traces"] = await self._run_trace_sync(force=force)
+            except Exception:
+                logger.debug("[星铁面板] 同步行迹倾向出错", exc_info=True)
         return self._guide_sync_last
+
+    def _trace_sync_due(self) -> bool:
+        now = time.time()
+        if now - self._trace_sync_failed_at < 600:
+            return False
+        return now - self._trace_sync_at >= self._guide_sync_hours() * 3600
+
+    async def _run_trace_sync(self, force: bool = False) -> Dict[str, Any]:
+        """同步角色行迹倾向。任何异常都收敛成结果字典。"""
+        if not force and not self._trace_sync_due():
+            return {"ok": True, "skipped": True, "count": count_traces()}
+        try:
+            result = await sync_traces(force=force)
+        except Exception as exc:
+            logger.warning(
+                f"[星铁面板] 同步行迹倾向出错：{type(exc).__name__}: {exc}"
+            )
+            result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "count": 0,
+            }
+        self._trace_sync_last = result or {}
+        if self._trace_sync_last.get("ok"):
+            self._trace_sync_at = time.time()
+        else:
+            self._trace_sync_failed_at = time.time()
+            logger.debug(
+                f"[星铁面板] 行迹倾向同步失败：{self._trace_sync_last.get('error')}"
+            )
+        return self._trace_sync_last
 
     async def _maybe_guide_sync(self, wait: float = 8.0) -> None:
         """资料缺失时顺带同步一次；超过 wait 秒就转后台，不拖住回答。"""
@@ -620,6 +678,9 @@ class StarRailPanelPlugin(Star):
             return
         # 上次同步还在有效期内且有文件，就不用再拉
         if not self._guide_sync_due() and count_auto_guides():
+            # 机制卡不用重拉，但行迹倾向可能是这次升级才加的，缺就补一次
+            if not count_traces():
+                await self._run_trace_sync()
             return
         await self._run_guide_sync()
 
@@ -708,23 +769,28 @@ class StarRailPanelPlugin(Star):
     @filter.command("同步资料", alias={"同步机制卡", "更新机制卡"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def sync_guides_command(self, event: AstrMessageEvent):
-        """管理员：立刻从上游同步角色机制卡，不用等自动检查。"""
+        """管理员：立刻从上游同步角色机制卡与行迹倾向，不用等自动检查。"""
         yield event.plain_result("开始同步机制卡，最多需要几十秒…")
         result = await self._run_guide_sync(force=True)
         if not result.get("ok"):
             yield event.plain_result(
                 f"同步失败：{result.get('error') or '未知原因'}\n"
                 "如果是一直失败，多半是服务器访问不了 GitHub / jsDelivr。"
+                + _trace_sync_note(result.get("traces"))
             )
             return
         version = str(result.get("version") or "")[:8] or "未知"
         if result.get("skipped"):
-            yield event.plain_result(f"资料已是最新（版本 {version}），无需更新。")
+            yield event.plain_result(
+                f"资料已是最新（版本 {version}），无需更新。"
+                + _trace_sync_note(result.get("traces"))
+            )
             return
         yield event.plain_result(
             f"同步完成：{result.get('written')} 个角色，"
-            f"版本 {version}，耗时 {result.get('elapsed')} 秒。\n"
-            "用 /角色资料 <角色名> 可以直接查看。"
+            f"版本 {version}，耗时 {result.get('elapsed')} 秒。"
+            + _trace_sync_note(result.get("traces"))
+            + "\n用 /角色资料 <角色名> 可以直接查看。"
         )
 
     # ------------------------------------------------------------------
@@ -1330,6 +1396,9 @@ class StarRailPanelPlugin(Star):
                 "- 面板数值一律以上面提供的数据为准，不要重新估算。\n"
                 "- 每个角色的「有效词条」来自属性权重表，代表这个角色实际吃哪些属性。"
                 "判断该堆什么时只依据它：不在有效词条里的属性，不要建议用户堆。\n"
+                "- 权重表没收录的角色，数据里会给出「行迹倾向」（该角色行迹自带的属性加成），"
+                "按它判断倾向即可；没有行迹倾向时按该角色的定位和技能倍率说明，"
+                "并明确告诉用户这是推断，不要编造权重表。\n"
                 "- 面板里出现的数值（暴击率、击破特攻等）只用于判断是否达标，"
                 "不代表该属性对这个角色有用。\n"
                 "- 倍率、持续回合、触发条件这类具体数字，资料里没写就不要写，"
@@ -1999,6 +2068,21 @@ class StarRailPanelPlugin(Star):
                 relic_ok = False
         add("遗器评分表", bool(relic_ok), "可用" if relic_ok else "当前库版本没有权重表")
 
+        try:
+            trace_count = count_traces()
+        except Exception:
+            trace_count = 0
+        trace_at = read_trace_synced_at() if trace_count else 0.0
+        add(
+            "行迹倾向数据",
+            trace_count > 0,
+            (
+                f"{trace_count} 个角色（同步于 {_fmt_ts(trace_at)}）"
+                if trace_count
+                else "尚未同步，权重表没收录的角色只能按定位推断"
+            ),
+        )
+
         render_fn = getattr(self, "html_render", None)
         add(
             "html_render",
@@ -2068,6 +2152,8 @@ class StarRailPanelPlugin(Star):
             ),
             "last_update_at": self._last_update_at,
             "last_update_msg": self._last_update_msg,
+            "trace_count": trace_count,
+            "trace_synced_at": trace_at,
         }
 
         return json_response({"checks": checks, "info": info})

@@ -49,6 +49,14 @@ except ImportError:  # 以普通脚本方式被导入时
         score_relic,
     )
 
+try:  # 权重表没收录的角色，用行迹倾向给属性高亮兜底（可选能力）
+    from .trace_sync import get_trace_stats
+except ImportError:
+    try:
+        from trace_sync import get_trace_stats
+    except Exception:  # noqa: BLE001
+        get_trace_stats = None  # type: ignore[assignment]
+
 CARD_DIR = Path(__file__).resolve().parent / "card"
 TEMPLATE_FILE = CARD_DIR / "character.html"
 
@@ -289,8 +297,10 @@ def build_card_data(panel: Dict[str, Any], uid: str, nickname: str) -> Dict[str,
     relic_total = f"{sum(relic_scores):.1f}" if relic_scores else ""
     relic_total_max = f"{RELIC_MAX_SCORE * len(relic_scores):.0f}" if relic_scores else ""
 
-    # 高权重属性，卡片上用金色标注
+    # 高权重属性，卡片上用金色标注。没有权重表时退回行迹倾向
     key_labels = key_stat_names(weight) if weight else set()
+    if not key_labels and get_trace_stats is not None:
+        key_labels = set(get_trace_stats(panel.get("avatar_id")))
     for stat in stats:
         stat["key"] = stat["label"] in key_labels
 
